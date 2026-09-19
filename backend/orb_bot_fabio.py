@@ -29,6 +29,8 @@ from fabio_bot_paths import fabio_bot_root
 
 load_dotenv(fabio_bot_root() / ".env")
 
+from config import MOOMOO_TRADE_ENV
+from paper_pin import enforce_paper_trading_pin
 import telegram_bot as tg
 from fabio_live.bot import ORBBot
 from sheets_logger import SheetsLogger
@@ -103,6 +105,9 @@ def run_bot_with_guard(bot_factory=ORBBot, sleep_fn=time.sleep) -> int:
       0 = clean stop
       1 = hard failure after restart budget exhausted
     """
+    # Paper pin before calendar / OpenD attach: REAL is refused unless allow flag.
+    enforce_paper_trading_pin(MOOMOO_TRADE_ENV)
+
     if not _calendar_allows_manual_start():
         tz = ZoneInfo("America/New_York")
         d = datetime.now(tz).date().isoformat()

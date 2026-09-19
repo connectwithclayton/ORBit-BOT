@@ -43,7 +43,7 @@ def test_get_candles_fresh_retries_then_returns_latest_if_stale(monkeypatch):
     calls = {"n": 0}
 
     def _stale_df(minutes_old: int) -> pd.DataFrame:
-        ts = pd.Timestamp.now() - pd.Timedelta(minutes=minutes_old)
+        ts = pd.Timestamp.now(tz="America/New_York") - pd.Timedelta(minutes=minutes_old)
         return pd.DataFrame(
             {
                 "time_key": [ts],

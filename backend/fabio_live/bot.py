@@ -24,6 +24,7 @@ from moomoo import KLType, OpenQuoteContext, OpenSecTradeContext, SecurityFirm, 
 from sheets_logger import SheetsLogger
 
 from config import MOOMOO_HOST, MOOMOO_PORT, modeled_equity_annotation_suffix
+from paper_pin import enforce_paper_trading_pin
 from fabio_live.async_ops import AsyncOpsWorker
 from fabio_live.circuit import RiskCircuitBreaker
 from fabio_live.constants import (
@@ -181,8 +182,9 @@ def compute_position_parity_state(
 class ORBBot:
 
     def __init__(self):
-        self.quote_ctx = OpenQuoteContext(host=MOOMOO_HOST, port=MOOMOO_PORT)
         trd_env = TrdEnv.SIMULATE if PAPER_TRADING else TrdEnv.REAL
+        enforce_paper_trading_pin(trd_env)
+        self.quote_ctx = OpenQuoteContext(host=MOOMOO_HOST, port=MOOMOO_PORT)
         self.trade_ctx = OpenSecTradeContext(
             filter_trdmarket=TrdMarket.US,
             host=MOOMOO_HOST,

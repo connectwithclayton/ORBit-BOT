@@ -73,6 +73,8 @@ python3 backend/moomoo_eod_failsafe.py --dry-run
 python3 backend/moomoo_eod_failsafe.py --dry-run --require-after-et
 ```
 
+**Paper pin (do not skip):** `--trd-env` defaults to **`SIMULATE`**, reading **`MOOMOO_TRADE_ENV`** first (same name as the live bot), then the legacy alias **`MOOMOO_TRD_ENV`**. It does **not** silently default to `REAL`. Targeting a live Moomoo book additionally requires `FABIO_ALLOW_REAL_TRADING=1`. Do not set that flag for paper trading. This script closes in the market only; it does not exercise options.
+
 <a id="exit-codes-moomoo_eod_failsafepy"></a>
 
 **Exit codes (`backend/moomoo_eod_failsafe.py`):**
@@ -105,7 +107,7 @@ Pre-flight config check (recommended before live runs and in your pre-open ritua
 PYTHONPATH=backend:frontend python3 backend/print_effective_config.py
 ```
 
-If `MOOMOO_TRADE_ENV=REAL`, this script prints a **prominent warning** first; otherwise the sanity summary states SIMULATE.
+If `MOOMOO_TRADE_ENV=REAL`, this script prints a **prominent warning** first; otherwise the sanity summary states **SIMULATE**. The live bot still **refuses REAL** unless `FABIO_ALLOW_REAL_TRADING=1` (paper-only default — do not set that flag). The sanity summary also prints **`strategy_capital_cap` ($10,000)** vs the **`risk_base` ceiling ($20,000)**.
 
 ### Modeled paper equity (Moomoo SIMULATE)
 
@@ -116,7 +118,18 @@ Moomoo paper `total_assets` is often a large notional (e.g. \$1M). The live bot 
 Defaults: **\$10,000** modeled book vs **\$1,000,000** broker reference (equivalent to subtracting **\$990,000** from raw `total_assets` at that reference).
 
 - **Unchanged:** Per-fill and per-trade dollar P&amp;L rows (Sheets, reconcile FIFO, dashboard legs) stay **broker-scale**.
-- **Adjusted:** Reported **capital** end-of-day, **daily return %** denominators, circuit-breaker **daily loss %** base, and **`risk_base = min(portfolio, cap)`** sizing input use the modeled equity.
+- **Adjusted:** Reported **capital** end-of-day, **daily return %** denominators, circuit-breaker **daily loss %** base, and the **`risk_base`** sizing input use the modeled equity.
+
+**Sizing (`risk_base`) is not the $10k cap.** Operators: do not size as if the book were capped at `strategy_capital_cap` ($10,000).
+
+```
+risk_base    = min(portfolio, strategy_capital_cap × research_risk_capital_multiplier)
+             = min(portfolio, $10,000 × 2.0)
+             = min(portfolio, $20,000)
+risk_dollars = risk_base × risk_pct
+```
+
+`$10,000` is the strategy / modeled-book cap. The live and research sizing ceiling is **$20,000** of modeled equity. `print_effective_config.py` prints both numbers.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -187,7 +200,7 @@ Strategy tunables live in `backend/backtest/fabio/settings.py` (`FabioBacktestSe
 Primary strategy knobs:
 
 - **Universe & dates:** `SYMBOLS`, `START_DATE`, `END_DATE`
-- **Capital:** `INITIAL_CAPITAL`
+- **Capital:** `INITIAL_CAPITAL` (backtest start, $10,000). **`strategy_capital_cap` ($10,000)** is the strategy / modeled-book cap — **not** the live sizing ceiling. **`risk_base = min(portfolio, $20,000)`** because `research_risk_capital_multiplier` defaults to **2.0**.
 - **Risk (Fabio v5 — half of ORB-style defaults):** `RISK_PCT_*`, `RISK_PCT_MAX`
 - **VIX tiers:** `VIX_SKIP`, `VIX_HALF_MAX`, `VIX_NORMAL_MAX`, `VIX_AGGRESSIVE_MAX`
 - **Gap / OR quality:** `GAP_SKIP_PCT`, `GAP_RETEST_PCT`, `OR_SKIP_PCT_ATR`, `OR_NORMAL_MIN_ATR`, `OR_WIDE_PCT_ATR`
@@ -281,6 +294,8 @@ Quick environment sanity:
 PYTHONPATH=backend:frontend python3 backend/print_effective_config.py
 ```
 
+Confirm **SIMULATE**, **paper pin** (`FABIO_ALLOW_REAL_TRADING` not set / not `1`), and **risk_base ceiling $20,000** vs **strategy_capital_cap $10,000**.
+
 Security-first env-file check (recommended):
 
 ```bash
@@ -299,7 +314,7 @@ PY
 
 ### Runtime operations
 
-Live bot (foreground/debug):
+Live bot (foreground/debug). Paper pin: refuses `MOOMOO_TRADE_ENV=REAL` unless `FABIO_ALLOW_REAL_TRADING=1`. Do not set that flag for paper.
 
 ```bash
 PYTHONPATH=backend:frontend python3 backend/orb_bot_fabio.py

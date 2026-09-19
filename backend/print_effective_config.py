@@ -30,6 +30,7 @@ from config import (
     TG_TOKEN,
 )
 from backtest.fabio.settings import FabioBacktestSettings
+from paper_pin import ALLOW_REAL_ENV, allow_real_trading_enabled, is_real_trd_env
 
 
 def _mask(value: str) -> str:
@@ -42,30 +43,41 @@ def _mask(value: str) -> str:
 
 def _print_real_trading_banner() -> None:
     raw = os.getenv("MOOMOO_TRADE_ENV", "SIMULATE").strip()
+    allowed = allow_real_trading_enabled()
     bar = "!" * 72
     print()
     print(bar)
     print("  WARNING: MOOMOO_TRADE_ENV resolves to REAL (live) trading.")
-    print("  Bot orders can execute against your real brokerage account.")
-    print("  Confirm account, buying power, and risk limits before starting.")
+    if allowed:
+        print(f"  {ALLOW_REAL_ENV}=1 is set — live path will attach REAL.")
+        print("  Confirm account, buying power, and risk limits before starting.")
+    else:
+        print(f"  Paper pin: live path will REFUSE REAL unless {ALLOW_REAL_ENV}=1.")
+        print("  Paper-only default. Do not set the allow flag for paper trading.")
     print(f"  Environment variable: MOOMOO_TRADE_ENV={raw!r}")
     print(bar)
     print()
 
 
 def main() -> None:
-    if MOOMOO_TRADE_ENV == TrdEnv.REAL:
+    if is_real_trd_env(MOOMOO_TRADE_ENV) or MOOMOO_TRADE_ENV == TrdEnv.REAL:
         _print_real_trading_banner()
 
     cfg = FabioBacktestSettings.from_env()
     strategy = asdict(cfg)
     strategy["polygon_api_key"] = _mask(cfg.polygon_api_key)
 
+    cap = float(strategy["strategy_capital_cap"])
+    mult = float(strategy["research_risk_capital_multiplier"])
+    risk_base_ceiling = cap * mult
+
     integrations = {
         "env_source": os.getenv("FABIO_ENV_FILE", str(fabio_bot_root() / ".env")),
         "moomoo_host": MOOMOO_HOST,
         "moomoo_port": MOOMOO_PORT,
         "moomoo_trade_env": str(MOOMOO_TRADE_ENV),
+        "fabio_allow_real_trading": os.getenv(ALLOW_REAL_ENV, "") or "(not set)",
+        "paper_pin_real_allowed": allow_real_trading_enabled(),
         "telegram_token": _mask(TG_TOKEN),
         "telegram_personal_chat_id": _mask(TG_PERSONAL_ID),
         "telegram_group_chat_id": _mask(TG_GROUP_ID),
@@ -91,14 +103,31 @@ def main() -> None:
         f"max={strategy['risk_pct_max']:.2f}"
     )
     print(
-        f"- sizing base: min(portfolio, strategy_capital_cap * "
-        f"research_risk_capital_multiplier) = min(portfolio, {strategy['strategy_capital_cap']:.0f} * "
-        f"{strategy['research_risk_capital_multiplier']:.2f})"
+        f"- strategy_capital_cap: ${cap:,.0f} (strategy / modeled-book cap — NOT the sizing ceiling)"
     )
-    if MOOMOO_TRADE_ENV == TrdEnv.REAL:
-        print("- Moomoo: REAL — live orders enabled (not paper / simulate).")
+    print(
+        f"- risk_base ceiling: ${risk_base_ceiling:,.0f} "
+        f"(= ${cap:,.0f} × {mult:.2f} research_risk_capital_multiplier)"
+    )
+    print(
+        f"- sizing: risk_base = min(portfolio, ${risk_base_ceiling:,.0f}); "
+        "risk_dollars = risk_base × risk_pct. Do not size as if the cap were $10,000."
+    )
+    if is_real_trd_env(MOOMOO_TRADE_ENV) or MOOMOO_TRADE_ENV == TrdEnv.REAL:
+        if allow_real_trading_enabled():
+            print(
+                f"- Moomoo: REAL — live orders allowed because {ALLOW_REAL_ENV}=1 "
+                "(not paper / simulate)."
+            )
+        else:
+            print(
+                f"- Moomoo: REAL requested but paper pin will REFUSE without {ALLOW_REAL_ENV}=1."
+            )
     else:
-        print("- Moomoo: SIMULATE — paper-style environment (set MOOMOO_TRADE_ENV=REAL only deliberately).")
+        print(
+            "- Moomoo: SIMULATE — paper-style environment "
+            f"(REAL also needs {ALLOW_REAL_ENV}=1; do not set it for paper)."
+        )
 
 
 if __name__ == "__main__":

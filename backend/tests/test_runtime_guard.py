@@ -3,7 +3,9 @@ from __future__ import annotations
 from orb_bot_fabio import run_bot_with_guard
 
 
-def test_runtime_guard_retries_then_succeeds():
+def test_runtime_guard_retries_then_succeeds(monkeypatch):
+    monkeypatch.setenv("FABIO_IGNORE_NYSE_CALENDAR", "1")
+
     class FlakyBot:
         attempts = 0
 
@@ -26,6 +28,7 @@ def test_runtime_guard_retries_then_succeeds():
 
 
 def test_runtime_guard_hard_fails_after_budget(monkeypatch):
+    monkeypatch.setenv("FABIO_IGNORE_NYSE_CALENDAR", "1")
     monkeypatch.setenv("FABIO_RUNTIME_MAX_RESTARTS", "2")
 
     class AlwaysFail:

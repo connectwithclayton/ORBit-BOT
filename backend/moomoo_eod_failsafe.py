@@ -24,6 +24,9 @@ Use ``--scope all`` only if you intend to liquidate stocks and everything else w
 
 This closes in the market only (sell longs / buy shorts). It does not exercise options.
 
+**Paper pin:** ``--trd-env`` defaults to ``MOOMOO_TRADE_ENV``, else legacy ``MOOMOO_TRD_ENV``,
+else **SIMULATE** (never silently REAL). REAL also requires ``FABIO_ALLOW_REAL_TRADING=1``.
+
 **Idempotency:** By default, re-queries positions (``refresh_cache=True``) before each
 ``place_order``. Each order gets a traceable ``remark`` (``eod_fs_<run>_<seq>[_code]``).
 Logs lines are UTC ISO timestamps. Use ``--no-refresh-per-order`` only if you accept
@@ -72,6 +75,8 @@ try:
     )
 except ImportError:
     OpenSecTradeContext = None  # type: ignore
+
+from paper_pin import enforce_paper_trading_pin, resolve_moomoo_trd_env_name
 
 COMPONENT = "moomoo_eod_failsafe"
 _LOG_CFG = {"format": "human"}
@@ -180,28 +185,28 @@ def _us_weekday_after_cutoff(now_et: datetime, hour: int, minute: int) -> bool:
     return now_et >= cutoff
 
 
-def _xnys_failsafe_cutoff_ok(now_et: datetime) -> tuple[bool, str]:
-    """After session_close - FAILSAFE_MINUTES on NYSE trading days; else explains abort."""
+def _load_env_file() -> None:
+    """Match live bot env resolution so MOOMOO_TRADE_ENV from .env is visible."""
     try:
-        from datetime import timedelta
+        from dotenv import load_dotenv
 
-        from fabio_live.constants import FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES
-        from fabio_live.us_equity_calendar import get_nyse_session_schedule_et
-    except ImportError as e:
-        return False, f"xnys_calendar_unavailable:{e}"
-
-    day = now_et.date()
-    sched = get_nyse_session_schedule_et(day)
-    if sched is None:
-        return False, "nyse_not_a_session_day"
-    mins = max(0, int(FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES))
-    cutoff = sched.session_close_et - timedelta(minutes=mins)
-    if now_et >= cutoff:
-        return True, "ok"
-    return False, f"before_failsafe_cutoff want_>={cutoff.isoformat()}"
+        from fabio_bot_paths import fabio_bot_root
+    except ImportError:
+        return
+    override = os.getenv("FABIO_ENV_FILE", "").strip()
+    if override:
+        load_dotenv(override)
+    else:
+        load_dotenv(fabio_bot_root() / ".env")
 
 
-def main() -> int:
+def default_trd_env_choice() -> str:
+    """CLI default: SIMULATE unless MOOMOO_TRADE_ENV / legacy MOOMOO_TRD_ENV is set."""
+    return resolve_moomoo_trd_env_name()
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Build CLI parser. --trd-env default is resolved at call time from env."""
     parser = argparse.ArgumentParser(description="Moomoo broker fail-safe: flatten open positions.")
     parser.add_argument("--host", default=os.environ.get("MOOMOO_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("MOOMOO_PORT", "11111")))
@@ -213,7 +218,12 @@ def main() -> int:
     parser.add_argument(
         "--trd-env",
         choices=("REAL", "SIMULATE"),
-        default=os.environ.get("MOOMOO_TRD_ENV", "REAL"),
+        default=default_trd_env_choice(),
+        help=(
+            "Moomoo trade environment. Default: %(default)s "
+            "(MOOMOO_TRADE_ENV, else legacy MOOMOO_TRD_ENV, else SIMULATE). "
+            "REAL requires FABIO_ALLOW_REAL_TRADING=1; paper-only otherwise."
+        ),
     )
     parser.add_argument(
         "--acc-id",
@@ -279,8 +289,36 @@ def main() -> int:
         default=os.environ.get("MOOMOO_LOG_FORMAT", "human"),
         help="human: timestamped text; jsonl: one JSON object per line on stdout",
     )
+    return parser
+
+
+def _xnys_failsafe_cutoff_ok(now_et: datetime) -> tuple[bool, str]:
+    """After session_close - FAILSAFE_MINUTES on NYSE trading days; else explains abort."""
+    try:
+        from datetime import timedelta
+
+        from fabio_live.constants import FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES
+        from fabio_live.us_equity_calendar import get_nyse_session_schedule_et
+    except ImportError as e:
+        return False, f"xnys_calendar_unavailable:{e}"
+
+    day = now_et.date()
+    sched = get_nyse_session_schedule_et(day)
+    if sched is None:
+        return False, "nyse_not_a_session_day"
+    mins = max(0, int(FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES))
+    cutoff = sched.session_close_et - timedelta(minutes=mins)
+    if now_et >= cutoff:
+        return True, "ok"
+    return False, f"before_failsafe_cutoff want_>={cutoff.isoformat()}"
+
+
+def main() -> int:
+    _load_env_file()
+    parser = build_arg_parser()
     args = parser.parse_args()
     _LOG_CFG["format"] = args.log_format
+    enforce_paper_trading_pin(args.trd_env)
 
     try:
         from zoneinfo import ZoneInfo
