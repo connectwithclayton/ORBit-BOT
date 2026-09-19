@@ -403,6 +403,28 @@ def test_bid_ask_spread_false_positive_is_accepted_skip():
     assert intent.skip == "multi-leg"
 
 
+def test_plural_spreads_in_body_are_multi_leg_skip():
+    phrases = (
+        "Buy spreads on SPY.",
+        "Looking at call spreads.",
+        "Looking at put spreads.",
+        "This is debit spreads territory.",
+        "Opening credit spreads here.",
+        "Vertical spreads on the name.",
+    )
+    for i, body in enumerate(phrases):
+        intent = parse_payload(
+            _site_call_payload(
+                alert_id=f"mr-fx-spreads-{i}",
+                structure="outright",
+                body_text=body,
+            )
+        )
+        assert intent.accepted is False, body
+        assert intent.skip == "multi-leg", body
+        assert intent.decision == DECISION_SKIP, body
+
+
 def test_format_telegram_escapes_html_in_payload_fields():
     intent = NormalizedIntent(
         source=SOURCE_MR,

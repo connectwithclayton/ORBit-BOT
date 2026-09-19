@@ -54,8 +54,8 @@ _CONF_WORD = re.compile(
 )
 _MULTI_TEXT = re.compile(
     r"\b(?:iron\s+condor|condor|butterfly|straddle|strangle|"
-    r"(?:call|put|debit|credit|vertical|calendar|diagonal)\s+spread|"
-    r"spread|"  # captain B: bare "spread" is multi-leg (false SKIP on bid-ask OK)
+    r"(?:call|put|debit|credit|vertical|calendar|diagonal)\s+spreads?|"
+    r"spreads?|"  # captain B: bare spread(s) is multi-leg (bid-ask false SKIP OK)
     r"multi[\s-]?leg)\b",
     re.I,
 )
