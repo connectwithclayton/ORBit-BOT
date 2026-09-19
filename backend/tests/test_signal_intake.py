@@ -425,6 +425,42 @@ def test_plural_spreads_in_body_are_multi_leg_skip():
         assert intent.decision == DECISION_SKIP, body
 
 
+def test_plural_structure_tokens_skip_without_body_hit():
+    for structure in ("spreads", "call_spreads", "butterflies", "iron_condors"):
+        intent = parse_payload(
+            _site_call_payload(
+                alert_id=f"mr-fx-struct-{structure}",
+                structure=structure,
+                body_text="Buy calls on SPY.",
+            )
+        )
+        assert intent.accepted is False, structure
+        assert intent.skip == "multi-leg", structure
+        assert intent.decision == DECISION_SKIP, structure
+
+
+def test_plural_multi_nouns_in_body_are_multi_leg_skip():
+    phrases = (
+        "Buy iron condors on SPY.",
+        "Opening straddles here.",
+        "Butterflies on the name.",
+        "Looking at strangles.",
+        "These combos are not outright.",
+        "Multi-legs on SPY.",
+    )
+    for i, body in enumerate(phrases):
+        intent = parse_payload(
+            _site_call_payload(
+                alert_id=f"mr-fx-nouns-{i}",
+                structure="outright",
+                body_text=body,
+            )
+        )
+        assert intent.accepted is False, body
+        assert intent.skip == "multi-leg", body
+        assert intent.decision == DECISION_SKIP, body
+
+
 def test_format_telegram_escapes_html_in_payload_fields():
     intent = NormalizedIntent(
         source=SOURCE_MR,

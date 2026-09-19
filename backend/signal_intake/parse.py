@@ -53,10 +53,14 @@ _CONF_WORD = re.compile(
     re.I,
 )
 _MULTI_TEXT = re.compile(
-    r"\b(?:iron\s+condor|condor|butterfly|straddle|strangle|"
+    r"\b(?:"
+    r"iron\s+condors?|condors?|"
+    r"butterfl(?:y|ies)|"
+    r"straddles?|strangles?|combos?|"
     r"(?:call|put|debit|credit|vertical|calendar|diagonal)\s+spreads?|"
     r"spreads?|"  # captain B: bare spread(s) is multi-leg (bid-ask false SKIP OK)
-    r"multi[\s-]?leg)\b",
+    r"multi[\s-]?legs?"
+    r")\b",
     re.I,
 )
 
@@ -69,7 +73,19 @@ _CONF_WORDS = {
     "weak": 0.35,
 }
 
-_MULTI_STRUCTURE = {
+
+def _with_regular_plurals(tokens: set[str]) -> frozenset[str]:
+    """Singular + regular plurals (spread→spreads, butterfly→butterflies)."""
+    out = set(tokens)
+    for t in tokens:
+        if t.endswith("y") and len(t) > 1 and t[-2] not in "aeiou":
+            out.add(t[:-1] + "ies")
+        elif not t.endswith("s"):
+            out.add(t + "s")
+    return frozenset(out)
+
+
+_MULTI_STRUCTURE = _with_regular_plurals({
     "spread",
     "call_spread",
     "put_spread",
@@ -89,7 +105,7 @@ _MULTI_STRUCTURE = {
     "multi-leg",
     "multileg",
     "multi_leg",
-}
+})
 
 # Explicit single-leg labels only. "option" / "equity" / "stock" are instrument
 # types, not a promise the payload is one leg — those must still scan body text.
