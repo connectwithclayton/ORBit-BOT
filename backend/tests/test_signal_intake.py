@@ -497,6 +497,25 @@ def test_unix_ms_published_at_can_shadow_accept():
     assert intent.decision == DECISION_SHADOW
 
 
+def test_yyyymmdd_numeric_does_not_shadow_via_1970():
+    """20260918 as Unix seconds is ~1970-08-23; must not SHADOW-accept."""
+    assert parse_as_of_et(20260918) is None
+    assert parse_as_of_et("20260918") is None
+    assert parse_as_of_et(20260918.0) is None
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-yyyymmdd",
+            published_at=20260918,
+            structure="outright",
+            body_text="Buy calls.",
+        )
+    )
+    assert intent.accepted is False
+    assert intent.decision == DECISION_SKIP
+    assert intent.skip == "missing-ts"
+    assert "1970" not in (intent.as_of_et or "")
+
+
 def test_string_and_float_legs_count_skips_multi_leg():
     base = _site_call_payload(
         structure="outright",

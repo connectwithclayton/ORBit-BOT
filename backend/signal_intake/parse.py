@@ -103,10 +103,12 @@ _TRUE_SINGLE_STRUCTURE = {
 _BUY_SELL = {"buy", "sell", "long", "short"}
 
 # Unix ms (current era ~1.7e12) vs seconds (~1.7e9). Seconds this large are
-# far-future and must not SHADOW-accept.
+# far-future and must not SHADOW-accept. Compact YYYYMMDD (8 digits) is not
+# epoch: 20260918 as seconds is ~1970-08-23.
 _UNIX_MS_THRESHOLD = 1_000_000_000_000  # 1e12
-_TS_YEAR_MIN = 1970
+_TS_YEAR_MIN = 2020
 _TS_YEAR_MAX = 2100
+_COMPACT_DATE_DIGIT_LENS = frozenset({7, 8})
 
 
 def parse_confidence(value: Any, text: str = "") -> float | None:
@@ -184,6 +186,11 @@ def parse_as_of_et(raw: Any) -> str | None:
     if numeric is not None:
         if numeric >= _UNIX_MS_THRESHOLD:
             numeric = numeric / 1000.0
+        else:
+            # YYYYMMDD / YYYYMMD look like ints but are not Unix seconds.
+            compact = abs(int(numeric))
+            if len(str(compact)) in _COMPACT_DATE_DIGIT_LENS:
+                return None
         try:
             dt = datetime.fromtimestamp(numeric, tz=ET)
         except (OverflowError, OSError, ValueError):
