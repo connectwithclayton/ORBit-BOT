@@ -1,0 +1,16 @@
+{
+  "channel": "site",
+  "alert_id": "mr-fx-001",
+  "published_at": "2026-09-18T10:15:00-04:00",
+  "ticker": "SPY",
+  "action": "buy",
+  "right": "call",
+  "instrument": "option",
+  "confidence": 0.82,
+  "legs": [
+    {
+      "right": "call",
+      "side": "buy"
+    }
+  ]
+}

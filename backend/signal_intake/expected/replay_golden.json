@@ -1,0 +1,135 @@
+[
+  {
+    "accepted": true,
+    "as_of_et": "2026-09-18T10:15:00-04:00",
+    "channel": "site",
+    "confidence": 0.82,
+    "decision": "SHADOW",
+    "direction": "CALL",
+    "instrument": "option",
+    "mapped": {
+      "side": "CALL",
+      "symbol": "SPY",
+      "ts": "2026-09-18T10:15:00-04:00"
+    },
+    "raw_id": "mr:mr-fx-001",
+    "reason": "source=mr | mode=SHADOW | decision=SHADOW | id=mr:mr-fx-001 | conf=0.8200 | mapped=SPY CALL",
+    "skip": null,
+    "source": "mr",
+    "symbol": "SPY"
+  },
+  {
+    "accepted": true,
+    "as_of_et": "2026-09-18T10:22:00-04:00",
+    "channel": "email",
+    "confidence": 0.75,
+    "decision": "SHADOW",
+    "direction": "PUT",
+    "instrument": "option",
+    "mapped": {
+      "side": "PUT",
+      "symbol": "QQQ",
+      "ts": "2026-09-18T10:22:00-04:00"
+    },
+    "raw_id": "mr:mr-fx-002@alerts.example.invalid",
+    "reason": "source=mr | mode=SHADOW | decision=SHADOW | id=mr:mr-fx-002@alerts.example.invalid | conf=0.7500 | mapped=QQQ PUT",
+    "skip": null,
+    "source": "mr",
+    "symbol": "QQQ"
+  },
+  {
+    "accepted": true,
+    "as_of_et": "2026-09-18T11:05:00-04:00",
+    "channel": "site",
+    "confidence": 0.85,
+    "decision": "SHADOW",
+    "direction": "EQUITY",
+    "instrument": "equity",
+    "mapped": {
+      "side": "EQUITY",
+      "symbol": "AAPL",
+      "ts": "2026-09-18T11:05:00-04:00"
+    },
+    "raw_id": "mr:mr-fx-003",
+    "reason": "source=mr | mode=SHADOW | decision=SHADOW | id=mr:mr-fx-003 | conf=0.8500 | mapped=AAPL EQUITY",
+    "skip": null,
+    "source": "mr",
+    "symbol": "AAPL"
+  },
+  {
+    "accepted": false,
+    "as_of_et": "2026-09-18T11:40:00-04:00",
+    "channel": "site",
+    "confidence": 0.7,
+    "decision": "SKIP",
+    "direction": "",
+    "instrument": "",
+    "mapped": {
+      "side": "",
+      "symbol": "NVDA",
+      "ts": "2026-09-18T11:40:00-04:00"
+    },
+    "raw_id": "mr:mr-fx-004",
+    "reason": "source=mr | mode=SHADOW | decision=SKIP | id=mr:mr-fx-004 | conf=0.7000 | skip=multi-leg",
+    "skip": "multi-leg",
+    "source": "mr",
+    "symbol": "NVDA"
+  },
+  {
+    "accepted": false,
+    "as_of_et": "2026-09-18T12:00:00-04:00",
+    "channel": "email",
+    "confidence": null,
+    "decision": "SKIP",
+    "direction": "",
+    "instrument": "",
+    "mapped": {
+      "side": "",
+      "symbol": "UNKNOWN",
+      "ts": "2026-09-18T12:00:00-04:00"
+    },
+    "raw_id": "mr:mr-fx-005@alerts.example.invalid",
+    "reason": "source=mr | mode=SHADOW | decision=SKIP | id=mr:mr-fx-005@alerts.example.invalid | conf= | skip=unparseable",
+    "skip": "unparseable",
+    "source": "mr",
+    "symbol": "UNKNOWN"
+  },
+  {
+    "accepted": false,
+    "as_of_et": "2026-09-18T10:15:00-04:00",
+    "channel": "site",
+    "confidence": 0.82,
+    "decision": "SKIP",
+    "direction": "CALL",
+    "instrument": "option",
+    "mapped": {
+      "side": "CALL",
+      "symbol": "SPY",
+      "ts": "2026-09-18T10:15:00-04:00"
+    },
+    "raw_id": "mr:mr-fx-001",
+    "reason": "source=mr | mode=SHADOW | decision=SKIP | id=mr:mr-fx-001 | conf=0.8200 | skip=duplicate",
+    "skip": "duplicate",
+    "source": "mr",
+    "symbol": "SPY"
+  },
+  {
+    "accepted": true,
+    "as_of_et": "2026-09-18T13:10:00-04:00",
+    "channel": "email",
+    "confidence": 0.6,
+    "decision": "SHADOW",
+    "direction": "CALL",
+    "instrument": "option",
+    "mapped": {
+      "side": "CALL",
+      "symbol": "AMD",
+      "ts": "2026-09-18T13:10:00-04:00"
+    },
+    "raw_id": "mr:mr-fx-007@alerts.example.invalid",
+    "reason": "source=mr | mode=SHADOW | decision=SHADOW | id=mr:mr-fx-007@alerts.example.invalid | conf=0.6000 | mapped=AMD CALL",
+    "skip": null,
+    "source": "mr",
+    "symbol": "AMD"
+  }
+]
