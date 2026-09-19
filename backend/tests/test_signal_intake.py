@@ -469,3 +469,92 @@ def test_unix_ms_published_at_can_shadow_accept():
     assert intent.accepted is True
     assert intent.as_of_et == dt.isoformat()
     assert intent.decision == DECISION_SHADOW
+
+
+def test_string_and_float_legs_count_skips_multi_leg():
+    base = _site_call_payload(
+        structure="outright",
+        body_text="Buy calls.",
+        instrument="option",
+        right="call",
+    )
+    for legs in ("2", 2.0, "2.0", " 2 "):
+        intent = parse_payload({**base, "alert_id": f"mr-fx-legs-{legs}", "legs": legs})
+        assert intent.accepted is False, legs
+        assert intent.skip == "multi-leg", legs
+        assert intent.decision == DECISION_SKIP
+        assert intent.direction == ""
+
+
+def test_unambiguous_single_leg_numeric_still_shadows():
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-legs-one",
+            structure="outright",
+            body_text="Buy calls.",
+            legs="1",
+        )
+    )
+    assert intent.accepted is True
+    assert intent.mapped()["side"] == "CALL"
+
+
+def test_non_integer_float_legs_does_not_count_as_multi():
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-legs-half",
+            structure="outright",
+            body_text="Buy calls.",
+            legs=2.5,
+        )
+    )
+    assert intent.skip != "multi-leg"
+    assert intent.accepted is True
+
+
+def test_equity_instrument_plus_call_right_is_contradictory_skip():
+    intent = parse_payload(
+        {
+            "channel": "site",
+            "alert_id": "mr-fx-eq-call",
+            "published_at": "2026-09-18T10:15:00-04:00",
+            "ticker": "AAPL",
+            "instrument": "equity",
+            "right": "call",
+            "confidence": 0.8,
+            "structure": "outright",
+            "body_text": "Listed as shares.",
+        }
+    )
+    assert intent.accepted is False
+    assert intent.skip == "contradictory"
+    assert intent.decision == DECISION_SKIP
+    assert intent.direction == ""
+    assert intent.mapped()["side"] == ""
+    assert "EQUITY" not in intent.reason
+    assert "mapped=AAPL" not in intent.reason
+
+
+def test_equity_instrument_plus_put_direction_is_contradictory_skip():
+    intent = parse_payload(
+        {
+            "channel": "site",
+            "alert_id": "mr-fx-eq-put",
+            "published_at": "2026-09-18T10:15:00-04:00",
+            "ticker": "MSFT",
+            "asset_class": "stock",
+            "direction": "PUT",
+            "structure": "outright",
+        }
+    )
+    assert intent.accepted is False
+    assert intent.skip == "contradictory"
+
+
+def test_plain_equity_without_option_right_still_shadows():
+    intent = parse_payload(
+        json.loads((FIXTURE_DIR / "03_site_aapl_equity.json").read_text())
+    )
+    assert intent.accepted is True
+    assert intent.mapped()["side"] == "EQUITY"
+    assert intent.instrument == "equity"

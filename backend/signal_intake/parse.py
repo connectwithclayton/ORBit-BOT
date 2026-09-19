@@ -22,6 +22,7 @@ SKIP_MULTI_LEG = "multi-leg"
 SKIP_DUPLICATE = "duplicate"
 SKIP_UNPARSEABLE = "unparseable"
 SKIP_MISSING_TS = "missing-ts"
+SKIP_CONTRADICTORY = "contradictory"
 
 _TICKER_FIELD = re.compile(r"^[A-Z]{1,6}(?:\.[A-Z]{1,2})?$")
 _TICKER_LABEL = re.compile(
@@ -234,14 +235,40 @@ def _norm_right(token: str) -> str:
     return ""
 
 
+def _option_right_from_fields(payload: dict[str, Any]) -> str:
+    """Explicit CALL|PUT from structured fields (not buy/sell side)."""
+    for key in ("right", "direction"):
+        raw = payload.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        if key == "direction" and str(raw).strip().lower() in _BUY_SELL:
+            continue
+        mapped = _norm_right(str(raw))
+        if mapped in ("CALL", "PUT"):
+            return mapped
+    side = payload.get("side")
+    if side is not None and str(side).strip().lower() not in _BUY_SELL:
+        mapped = _norm_right(str(side))
+        if mapped in ("CALL", "PUT"):
+            return mapped
+    return ""
+
+
 def _extract_direction_and_instrument(
     payload: dict[str, Any], text: str
-) -> tuple[str, str]:
+) -> tuple[str, str, str | None]:
+    """Return (direction, instrument, skip). Skip contradictory equity+option rights."""
     instrument_raw = str(
         payload.get("instrument") or payload.get("asset_class") or ""
     ).strip().lower()
-    if instrument_raw in ("equity", "stock", "shares", "share"):
-        return "EQUITY", "equity"
+    equity_instrument = instrument_raw in ("equity", "stock", "shares", "share")
+    option_right = _option_right_from_fields(payload)
+    if option_right:
+        # Safer shadow: do not map instrument=equity + right=call/put as EQUITY
+        # or as a clean CALL/PUT. Human sees SKIP contradictory.
+        if equity_instrument:
+            return "", "", SKIP_CONTRADICTORY
+        return option_right, "option", None
 
     for key in ("right", "direction"):
         raw = payload.get(key)
@@ -251,49 +278,76 @@ def _extract_direction_and_instrument(
             continue
         mapped = _norm_right(str(raw))
         if mapped == "EQUITY":
-            return "EQUITY", "equity"
-        if mapped in ("CALL", "PUT"):
-            return mapped, "option"
+            return "EQUITY", "equity", None
 
     side = payload.get("side")
     if side is not None and str(side).strip().lower() not in _BUY_SELL:
         mapped = _norm_right(str(side))
         if mapped == "EQUITY":
-            return "EQUITY", "equity"
-        if mapped in ("CALL", "PUT"):
-            return mapped, "option"
+            return "EQUITY", "equity", None
 
     m = _DIR_LABEL.search(text)
     if m:
         mapped = _norm_right(m.group(1))
         if mapped == "EQUITY":
-            return "EQUITY", "equity"
+            return "EQUITY", "equity", None
         if mapped in ("CALL", "PUT"):
-            return mapped, "option"
+            if equity_instrument:
+                return "", "", SKIP_CONTRADICTORY
+            return mapped, "option", None
 
     if _BUY_PUTS.search(text) or _LOOKING_PUTS.search(text):
-        return "PUT", "option"
+        if equity_instrument:
+            return "", "", SKIP_CONTRADICTORY
+        return "PUT", "option", None
     if _BUY_CALLS.search(text) or _LOOKING_CALLS.search(text):
-        return "CALL", "option"
+        if equity_instrument:
+            return "", "", SKIP_CONTRADICTORY
+        return "CALL", "option", None
+
+    if equity_instrument:
+        return "EQUITY", "equity", None
 
     if instrument_raw in ("option", "options"):
-        return "", "option"
+        return "", "option", None
 
     if _EQUITY_HINT.search(text) and not (_BUY_CALLS.search(text) or _BUY_PUTS.search(text)):
-        return "EQUITY", "equity"
+        return "EQUITY", "equity", None
 
-    return "", ""
+    return "", "", None
+
+
+def _coerce_leg_count(value: Any) -> int | None:
+    """Int count from int/float/numeric string when unambiguous (2, 2.0, "2")."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        if value >= 0 and value.is_integer():
+            return int(value)
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            parsed = float(s)
+        except ValueError:
+            return None
+        if parsed >= 0 and parsed.is_integer():
+            return int(parsed)
+        return None
+    return None
 
 
 def _legs_count(payload: dict[str, Any]) -> int | None:
     legs = payload.get("legs")
     if legs is None:
         return None
-    if isinstance(legs, int) and not isinstance(legs, bool):
-        return legs
     if isinstance(legs, list):
         return len(legs)
-    return None
+    return _coerce_leg_count(legs)
 
 
 def _is_multi_leg(payload: dict[str, Any], text: str) -> bool:
@@ -360,7 +414,9 @@ def parse_payload(
         or payload.get("ts")
     )
     symbol = _extract_symbol(payload, text)
-    direction, instrument = _extract_direction_and_instrument(payload, text)
+    direction, instrument, extract_skip = _extract_direction_and_instrument(
+        payload, text
+    )
     confidence = parse_confidence(payload.get("confidence"), text)
 
     skip: str | None = None
@@ -368,6 +424,10 @@ def parse_payload(
         skip = SKIP_DUPLICATE
     elif _is_multi_leg(payload, text):
         skip = SKIP_MULTI_LEG
+        direction = ""
+        instrument = ""
+    elif extract_skip:
+        skip = extract_skip
         direction = ""
         instrument = ""
     elif not ts:
