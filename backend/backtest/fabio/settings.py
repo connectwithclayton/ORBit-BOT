@@ -33,7 +33,7 @@ class FabioBacktestSettings:
     start_date: str = "2023-05-03"
     end_date: str = "2026-05-03"
     initial_capital: float = 10_000.0
-    strategy_capital_cap: float = 10_000.0  # live bot sizing cap (mirrors orb_bot_fabio)
+    strategy_capital_cap: float = 10_000.0  # $10k strategy/modeled-book cap; NOT risk_base ceiling
 
     data_source: str = "polygon"  # "polygon" | "yfinance"
     polygon_api_key: str = ""
@@ -69,7 +69,8 @@ class FabioBacktestSettings:
     slippage_pct: float = 0.02
     commission: float = 1.30
 
-    research_risk_capital_multiplier: float = 2.0  # min(capital, initial * this) in research mode
+    # risk_base = min(portfolio, strategy_capital_cap * this) → $20k ceiling, not $10k
+    research_risk_capital_multiplier: float = 2.0
 
     @classmethod
     def from_env(cls) -> FabioBacktestSettings:
