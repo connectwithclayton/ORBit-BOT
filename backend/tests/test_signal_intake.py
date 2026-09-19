@@ -7,12 +7,20 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from signal_intake.ids import IdempotencyStore, make_raw_id
-from signal_intake.models import DECISION_SHADOW, DECISION_SKIP, MODE_SHADOW, SOURCE_MR
-from signal_intake.parse import parse_confidence, parse_payload
+from signal_intake.models import (
+    DECISION_SHADOW,
+    DECISION_SKIP,
+    MODE_SHADOW,
+    SOURCE_MR,
+    NormalizedIntent,
+)
+from signal_intake.parse import parse_as_of_et, parse_confidence, parse_payload
 from signal_intake.replay import (
     FIXTURE_DIR,
     GOLDEN_PATH,
@@ -304,3 +312,160 @@ def test_cli_replay_stdout_matches_golden():
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == GOLDEN_PATH.read_text(encoding="utf-8")
+
+
+def _site_call_payload(**overrides):
+    base = {
+        "channel": "site",
+        "alert_id": "mr-fx-body-scan",
+        "published_at": "2026-09-18T10:15:00-04:00",
+        "ticker": "SPY",
+        "right": "call",
+        "instrument": "option",
+        "confidence": 0.8,
+        "structure": "option",
+        "body_text": "Buy the call spread on SPY.",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_option_structure_still_drops_call_spread_in_body():
+    intent = parse_payload(_site_call_payload())
+    assert intent.accepted is False
+    assert intent.skip == "multi-leg"
+    assert intent.decision == DECISION_SKIP
+
+
+def test_equity_structure_still_drops_iron_condor_in_body():
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-condor",
+            ticker="NVDA",
+            instrument="equity",
+            structure="equity",
+            right="",
+            body_text="Opening an iron condor here.",
+        )
+    )
+    assert intent.accepted is False
+    assert intent.skip == "multi-leg"
+
+
+def test_true_single_leg_structure_still_accepts_outright():
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-outright",
+            structure="outright",
+            body_text="Single-leg call. No spread.",
+        )
+    )
+    assert intent.accepted is True
+    assert intent.decision == DECISION_SHADOW
+    assert intent.mapped()["side"] == "CALL"
+
+
+def test_true_single_leg_still_drops_when_body_is_multi():
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-single-plus-spread",
+            structure="single_leg",
+            body_text="Ignore the header — this is a call spread.",
+        )
+    )
+    assert intent.accepted is False
+    assert intent.skip == "multi-leg"
+
+
+def test_format_telegram_escapes_html_in_payload_fields():
+    intent = NormalizedIntent(
+        source=SOURCE_MR,
+        symbol="SPY<b>x",
+        direction="CALL",
+        instrument="option",
+        as_of_et="2026-09-18T10:15:00-04:00<script>",
+        raw_id="mr:id&x",
+        confidence=0.5,
+        decision=DECISION_SHADOW,
+        reason="source=mr | mode=SHADOW",
+        accepted=True,
+        skip=None,
+        channel="site",
+    )
+    msg = format_telegram(intent)
+    assert "SPY&lt;b&gt;x" in msg
+    assert "SPY<b>x" not in msg
+    assert "mr:id&amp;x" in msg
+    assert "&lt;script&gt;" in msg
+    assert "<script>" not in msg
+    assert "<b>SHADOW MR INTAKE</b>" in msg
+
+
+def test_emit_shadow_isolates_sink_failures(capsys):
+    intent = parse_payload(
+        json.loads((FIXTURE_DIR / "01_site_spy_call.json").read_text())
+    )
+    alerts: list[str] = []
+    decisions: list[tuple] = []
+
+    def boom_decision(*_a, **_k):
+        raise RuntimeError("sheets down")
+
+    def ok_alert(text: str):
+        alerts.append(text)
+
+    out = emit_shadow(intent, log_decision=boom_decision, alert=ok_alert)
+    assert out["raw_id"] == intent.raw_id
+    assert len(alerts) == 1
+    assert "sheets down" in capsys.readouterr().out
+
+    def ok_decision(*args, **kwargs):
+        decisions.append((args, kwargs))
+
+    def boom_alert(_text: str):
+        raise RuntimeError("telegram down")
+
+    emit_shadow(intent, log_decision=ok_decision, alert=boom_alert)
+    assert len(decisions) == 1
+    assert "telegram down" in capsys.readouterr().out
+
+
+def test_parse_as_of_et_accepts_unix_ms_and_seconds():
+    et = ZoneInfo("America/New_York")
+    dt = datetime(2026, 9, 18, 10, 15, tzinfo=et)
+    seconds = dt.timestamp()
+    ms = int(seconds * 1000)
+    assert parse_as_of_et(ms) == dt.isoformat()
+    assert parse_as_of_et(str(ms)) == dt.isoformat()
+    assert parse_as_of_et(int(seconds)) == dt.isoformat()
+
+
+def test_parse_as_of_et_rejects_far_future_numeric():
+    # 9.9e15 ms → still far-future after one /1000; must not SHADOW-accept.
+    assert parse_as_of_et(9.9e15) is None
+    payload = _site_call_payload(
+        alert_id="mr-fx-ms-future",
+        published_at=1_758_204_900_000_000,
+        body_text="Buy calls.",
+        structure="outright",
+    )
+    intent = parse_payload(payload)
+    assert intent.accepted is False
+    assert intent.decision == DECISION_SKIP
+    assert intent.skip == "missing-ts"
+
+
+def test_unix_ms_published_at_can_shadow_accept():
+    et = ZoneInfo("America/New_York")
+    dt = datetime(2026, 9, 18, 10, 15, tzinfo=et)
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-ms-ok",
+            published_at=int(dt.timestamp() * 1000),
+            structure="outright",
+            body_text="Buy calls.",
+        )
+    )
+    assert intent.accepted is True
+    assert intent.as_of_et == dt.isoformat()
+    assert intent.decision == DECISION_SHADOW

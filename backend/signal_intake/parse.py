@@ -89,17 +89,22 @@ _MULTI_STRUCTURE = {
     "multi_leg",
 }
 
-_SINGLE_STRUCTURE = {
+# Explicit single-leg labels only. "option" / "equity" / "stock" are instrument
+# types, not a promise the payload is one leg — those must still scan body text.
+_TRUE_SINGLE_STRUCTURE = {
     "single",
     "single-leg",
     "single_leg",
     "outright",
-    "option",
-    "equity",
-    "stock",
 }
 
 _BUY_SELL = {"buy", "sell", "long", "short"}
+
+# Unix ms (current era ~1.7e12) vs seconds (~1.7e9). Seconds this large are
+# far-future and must not SHADOW-accept.
+_UNIX_MS_THRESHOLD = 1_000_000_000_000  # 1e12
+_TS_YEAR_MIN = 1970
+_TS_YEAR_MAX = 2100
 
 
 def parse_confidence(value: Any, text: str = "") -> float | None:
@@ -154,22 +159,40 @@ def _confidence_from_text(text: str) -> float | None:
     return None
 
 
+def _datetime_to_et_iso(dt: datetime) -> str | None:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ET)
+    else:
+        dt = dt.astimezone(ET)
+    if dt.year < _TS_YEAR_MIN or dt.year > _TS_YEAR_MAX:
+        return None
+    return dt.isoformat()
+
+
 def parse_as_of_et(raw: Any) -> str | None:
     if raw is None or raw == "":
         return None
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        dt = datetime.fromtimestamp(float(raw), tz=ET)
-        return dt.isoformat()
+    if isinstance(raw, bool):
+        return None
+    numeric: float | None = None
+    if isinstance(raw, (int, float)):
+        numeric = float(raw)
+    elif isinstance(raw, str) and raw.strip().isdigit():
+        numeric = float(raw.strip())
+    if numeric is not None:
+        if numeric >= _UNIX_MS_THRESHOLD:
+            numeric = numeric / 1000.0
+        try:
+            dt = datetime.fromtimestamp(numeric, tz=ET)
+        except (OverflowError, OSError, ValueError):
+            return None
+        return _datetime_to_et_iso(dt)
     s = str(raw).strip().replace("Z", "+00:00")
     try:
         dt = datetime.fromisoformat(s)
     except ValueError:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ET)
-    else:
-        dt = dt.astimezone(ET)
-    return dt.isoformat()
+    return _datetime_to_et_iso(dt)
 
 
 def _blob(payload: dict[str, Any]) -> str:
@@ -274,17 +297,22 @@ def _legs_count(payload: dict[str, Any]) -> int | None:
 
 
 def _is_multi_leg(payload: dict[str, Any], text: str) -> bool:
+    """True if legs>1, named multi structure, or body text looks multi-leg.
+
+    True single-leg tokens (single / single_leg / outright) do not by themselves
+    skip the body-text scan: option/equity/stock used to short-circuit and hide
+    phrases like "call spread" / "iron condor". Always OR with ``_MULTI_TEXT``.
+    """
     n = _legs_count(payload)
-    if n is not None and n > 1:
-        return True
+    legs_multi = n is not None and n > 1
     structure = str(
         payload.get("structure") or payload.get("strategy") or ""
     ).strip().lower().replace(" ", "_")
-    if structure in _MULTI_STRUCTURE:
-        return True
-    if structure in _SINGLE_STRUCTURE:
+    structure_multi = structure in _MULTI_STRUCTURE
+    text_multi = bool(_MULTI_TEXT.search(text))
+    if structure in _TRUE_SINGLE_STRUCTURE and not legs_multi and not text_multi:
         return False
-    return bool(_MULTI_TEXT.search(text))
+    return bool(legs_multi or structure_multi or text_multi)
 
 
 def _reason(

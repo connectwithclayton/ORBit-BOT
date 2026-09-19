@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from typing import Any, Callable, Protocol
 
 from signal_intake.models import MODE_SHADOW, SOURCE_MR, NormalizedIntent
@@ -18,15 +19,19 @@ class _OpsLike(Protocol):
 def format_telegram(intent: NormalizedIntent) -> str:
     """Operator-facing SHADOW notice. No fill / no order language as a command."""
     conf = "" if intent.confidence is None else f"{intent.confidence:.4f}"
-    skip_line = f"skip={intent.skip}\n" if intent.skip else ""
+    skip_line = f"skip={html.escape(str(intent.skip))}\n" if intent.skip else ""
+    symbol = html.escape(intent.symbol or "")
+    raw_id = html.escape(intent.raw_id or "")
+    as_of = html.escape(intent.as_of_et) if intent.as_of_et else "—"
+    side = html.escape(intent.direction) if intent.direction else "—"
     return (
         f"⚪ <b>{MODE_SHADOW} MR INTAKE</b>\n"
         f"source={SOURCE_MR} | mode={MODE_SHADOW}\n"
-        f"Decision: {intent.decision}\n"
+        f"Decision: {html.escape(intent.decision)}\n"
         f"{skip_line}"
-        f"Symbol: {intent.symbol}  Side: {intent.direction or '—'}\n"
-        f"ts: {intent.as_of_et or '—'}\n"
-        f"id: {intent.raw_id}\n"
+        f"Symbol: {symbol}  Side: {side}\n"
+        f"ts: {as_of}\n"
+        f"id: {raw_id}\n"
         f"confidence: {conf or '—'}\n"
         f"No order (shadow only)"
     )
@@ -47,15 +52,23 @@ def emit_shadow(
     ld = log_decision or (ops.log_decision if ops is not None else None)
     al = alert or (ops.alert if ops is not None else None)
     if ld is not None:
-        ld(
-            intent.symbol,
-            intent.direction or "—",
-            intent.decision,
-            intent.reason,
-            regime=MODE_SHADOW,
-        )
+        try:
+            ld(
+                intent.symbol,
+                intent.direction or "—",
+                intent.decision,
+                intent.reason,
+                # Decisions.Regime column is reused as a SHADOW tag for MR rows
+                # (not ORB day-color). Intentional slice-2 marker.
+                regime=MODE_SHADOW,
+            )
+        except Exception as exc:
+            print(f"[signal_intake] log_decision failed: {exc}")
     if al is not None:
-        al(format_telegram(intent))
+        try:
+            al(format_telegram(intent))
+        except Exception as exc:
+            print(f"[signal_intake] telegram alert failed: {exc}")
     return intent.to_stable_dict()
 
 
