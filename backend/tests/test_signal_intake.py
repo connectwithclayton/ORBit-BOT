@@ -357,7 +357,7 @@ def test_true_single_leg_structure_still_accepts_outright():
         _site_call_payload(
             alert_id="mr-fx-outright",
             structure="outright",
-            body_text="Single-leg call. No spread.",
+            body_text="Single-leg call. Outright only.",
         )
     )
     assert intent.accepted is True
@@ -371,6 +371,32 @@ def test_true_single_leg_still_drops_when_body_is_multi():
             alert_id="mr-fx-single-plus-spread",
             structure="single_leg",
             body_text="Ignore the header — this is a call spread.",
+        )
+    )
+    assert intent.accepted is False
+    assert intent.skip == "multi-leg"
+
+
+def test_bare_spread_in_body_is_multi_leg_skip():
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-bare-spread",
+            structure="outright",
+            body_text="Buy a spread on SPY.",
+        )
+    )
+    assert intent.accepted is False
+    assert intent.skip == "multi-leg"
+    assert intent.decision == DECISION_SKIP
+
+
+def test_bid_ask_spread_false_positive_is_accepted_skip():
+    """Captain B: bare \\bspread\\b is multi-leg; 'bid-ask spread' false SKIP is OK."""
+    intent = parse_payload(
+        _site_call_payload(
+            alert_id="mr-fx-bid-ask-spread",
+            structure="outright",
+            body_text="Watch the bid-ask spread on this SPY call.",
         )
     )
     assert intent.accepted is False
