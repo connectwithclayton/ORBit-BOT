@@ -716,6 +716,7 @@ def test_retained_jsonl_without_cursor_is_refused(tmp_path):
     assert cursor.load_or_create() is False
     assert cursor.refused is True
     assert cursor.next_rows() is None
+    assert cursor.save() is False
     assert not cursor.path.is_file()
 
 
@@ -757,3 +758,86 @@ def test_bot_restart_jsonl_drain_does_not_duplicate(tmp_path, monkeypatch):
     assert trade2.orders == []
     assert mgr2.open_count() == 0
     assert len(trade1.orders) == n
+
+
+def _drain_bot(mgr, cb, *, paused=False):
+    from fabio_live.bot import ORBBot
+
+    bot = ORBBot.__new__(ORBBot)
+    bot.paused = paused
+    bot.order_mgr = mgr
+    bot.cb = cb
+    bot.ops = SimpleNamespace(
+        log_decision=lambda *a, **k: None, alert=lambda *a: None
+    )
+    bot.trade_ctx = SimpleNamespace()
+    bot._mr_queue = []
+    bot._init_mr_paper_executor()
+    return bot
+
+
+def test_drain_does_not_write_cursor_when_refused(tmp_path, monkeypatch):
+    """In-memory payloads must not mint offset=0 beside retained JSONL."""
+    queue = tmp_path / "retained.jsonl"
+    queue.write_text(json.dumps(_shelf("buy_nok_calls.json")) + "\n", encoding="utf-8")
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setenv("FABIO_MR_QUEUE_PATH", str(queue))
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "fabio_live.bot.get_portfolio_value", lambda *_a, **_k: 10_000.0
+    )
+    cursor_path = Path(str(queue) + ".cursor.json")
+    assert not cursor_path.is_file()
+
+    ex, mgr, trade, cb = _executor(enabled=True, ask=0.79)
+    bot = _drain_bot(mgr, cb, paused=False)
+    assert bot._mr_cursor is not None
+    assert bot._mr_cursor.refused is True
+    bot._mr_queue = [
+        {
+            "id": "memory_only",
+            "channel": "email",
+            "subject": "not a trade",
+            "body": "",
+        }
+    ]
+    bot._drain_mr_paper(allow_entries=True)
+    assert not cursor_path.is_file(), "refused drain must not create cursor"
+    assert mgr.open_count() == 0
+    assert trade.orders == []
+
+    ex2, mgr2, trade2, cb2 = _executor(enabled=True, ask=0.79)
+    bot2 = _drain_bot(mgr2, cb2, paused=False)
+    bot2._drain_mr_paper(allow_entries=True)
+    assert bot2._mr_cursor.refused is True
+    assert not cursor_path.is_file()
+    assert trade2.orders == []
+    assert mgr2.open_count() == 0
+
+
+def test_drain_skipped_while_bot_paused(tmp_path, monkeypatch):
+    queue = tmp_path / "mr.jsonl"
+    queue.write_text("", encoding="utf-8")
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setenv("FABIO_MR_QUEUE_PATH", str(queue))
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "fabio_live.bot.get_portfolio_value", lambda *_a, **_k: 10_000.0
+    )
+
+    ex, mgr, trade, cb = _executor(enabled=True, ask=0.79)
+    bot = _drain_bot(mgr, cb, paused=True)
+    queue.write_text(json.dumps(_shelf("buy_nok_calls.json")) + "\n", encoding="utf-8")
+    queued = [{"id": "paused_memory", "channel": "email", "body": ""}]
+    bot._mr_queue = list(queued)
+    bot._drain_mr_paper(allow_entries=True)
+    assert mgr.open_count() == 0
+    assert trade.orders == []
+    assert bot._mr_queue == queued
+    assert int(bot._mr_cursor.offset) == 0
+
+    bot.paused = False
+    bot._drain_mr_paper(allow_entries=True)
+    assert mgr.has_position("NOK")
+    assert trade.orders
+    assert bot._mr_queue == []

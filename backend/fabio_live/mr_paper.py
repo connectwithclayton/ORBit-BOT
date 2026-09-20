@@ -189,6 +189,8 @@ class DurableMrCursor:
         return self.save()
 
     def save(self) -> bool:
+        if self.refused:
+            return False
         payload = self.store.to_durable_dict()
         payload["offset"] = int(self.offset)
         tmp = self.path.with_name(self.path.name + ".tmp")

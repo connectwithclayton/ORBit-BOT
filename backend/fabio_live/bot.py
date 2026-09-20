@@ -1132,6 +1132,11 @@ class ORBBot:
         executor = getattr(self, "_mr_executor", None)
         if executor is None:
             return
+        # Match ORB: no new work while paused (startup reconcile / operator).
+        # Leaves the in-memory queue and JSONL cursor untouched.
+        if getattr(self, "paused", False):
+            print("  ⏸ [mr_paper] Drain skipped — bot paused")
+            return
         from signal_intake.parse import parse_payload
 
         payloads: list[dict] = list(getattr(self, "_mr_queue", []) or [])
@@ -1156,11 +1161,15 @@ class ORBBot:
             _run(payload)
         cursor = getattr(self, "_mr_cursor", None)
         if cursor is not None:
-            if payloads:
-                cursor.save()
             if cursor.refused:
+                # Never write offset=0 beside retained JSONL — next process
+                # would treat that as a valid cursor and re-drain the file.
                 print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
                 return
+            if payloads:
+                if not cursor.save():
+                    print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
+                    return
             rows = cursor.next_rows()
             if rows is None:
                 print(f"  ⚠  [mr_paper] {cursor.refuse_reason or 'queue cursor refused'}")
