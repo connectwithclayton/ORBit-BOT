@@ -449,6 +449,28 @@ class ORBBot:
             return False, f"{symbol} skipped: missing/invalid cost basis"
         return True, ""
 
+    @staticmethod
+    def _is_orb_universe_symbol(symbol: str) -> bool:
+        return str(symbol or "").upper() in {s.upper() for s in SYMBOLS}
+
+    @staticmethod
+    def _option_strike_expiry(code: str) -> tuple[float | None, str]:
+        """OCC strike/expiry from a Moomoo option code (US.IBM261016C00250000)."""
+        text = str(code or "")
+        if not text.startswith("US."):
+            return None, ""
+        raw = text.split(".")[-1]
+        m = re.match(r"[A-Z]+(\d{6})[CP](\d+)", raw)
+        if not m:
+            return None, ""
+        yymmdd = m.group(1)
+        try:
+            strike = int(m.group(2)) / 1000.0
+        except (TypeError, ValueError):
+            return None, ""
+        expiry = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
+        return strike, expiry
+
     def _adopt_startup_position(self, row: dict) -> tuple[bool, str]:
         ok, detail = self._startup_adopt_precheck(row)
         if not ok:
@@ -461,7 +483,7 @@ class ORBBot:
             default=0.0,
         )
 
-        self.order_mgr.positions[symbol] = {
+        rec = {
             "direction": direction,
             "code": code,
             "original_qty": qty,
@@ -475,6 +497,21 @@ class ORBBot:
             "entry_stock_price": 0.0,
             "adopted_startup": True,
         }
+        # A1: non-ORB (typical MR) legs are tagged source=mr and stay off
+        # signals/exit_tfs so run_exit_loop never KeyErrors on regimes[sym].
+        if not self._is_orb_universe_symbol(symbol):
+            from signal_intake.models import SOURCE_MR
+
+            rec["source"] = SOURCE_MR
+            strike, expiry = self._option_strike_expiry(code)
+            if strike is not None:
+                rec["strike"] = strike
+            if expiry:
+                rec["expiry"] = expiry
+            self.order_mgr.positions[symbol] = rec
+            return True, f"{symbol} {direction} x{qty} adopted source=mr"
+
+        self.order_mgr.positions[symbol] = rec
         self.signals[symbol] = direction
         self.exit_tfs[symbol] = KLType.K_5M
         et = self._now_market().strftime("%H:%M:%S")

@@ -841,3 +841,140 @@ def test_drain_skipped_while_bot_paused(tmp_path, monkeypatch):
     assert mgr.has_position("NOK")
     assert trade.orders
     assert bot._mr_queue == []
+
+
+def _reconcile_bot(monkeypatch, mgr, rows, *, cb=None, mr_ex=None):
+    from fabio_live.bot import ORBBot
+
+    monkeypatch.setattr("fabio_live.bot.AUTO_ADOPT_OPEN_POSITIONS", True)
+    bot = ORBBot.__new__(ORBBot)
+    bot.paused = False
+    bot._pause_reason_code = ""
+    bot._pause_reason_hint = ""
+    bot._startup_unreconciled_positions = []
+    bot.signals = {}
+    bot.exit_tfs = {}
+    bot.regimes = {}
+    bot._trade_entries = {}
+    bot._tz = __import__("zoneinfo").ZoneInfo("America/New_York")
+    bot.order_mgr = mgr
+    bot.cb = cb or RiskCircuitBreaker()
+    bot._mr_executor = mr_ex
+    bot.ops = SimpleNamespace(alert=lambda *_: None, log_alert=lambda *_: None)
+    df = pd.DataFrame(rows)
+    bot.trade_ctx = SimpleNamespace(
+        position_list_query=lambda **kwargs: (0, df)
+    )
+    bot._startup_reconcile_positions()
+    return bot
+
+
+def test_auto_adopt_non_orb_tags_source_mr_and_skips_orb_signals(monkeypatch):
+    """Mid-session restart: NOK/IBM adopted as MR; SPY stays unmarked ORB."""
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, _trade, cb = _executor(enabled=True, ask=0.79)
+    bot = _reconcile_bot(
+        monkeypatch,
+        mgr,
+        [
+            {
+                "code": "US.NOK261016C00010000",
+                "qty": 2,
+                "cost_price": 0.79,
+            },
+            {
+                "code": "US.IBM261016C00250000",
+                "qty": 1,
+                "cost_price": 6.38,
+            },
+            {
+                "code": "US.SPY260507C00735000",
+                "qty": 2,
+                "cost_price": 1.25,
+            },
+        ],
+        cb=cb,
+        mr_ex=ex,
+    )
+    assert bot.paused is False
+    assert mgr.positions["NOK"].get("source") == SOURCE_MR
+    assert mgr.positions["IBM"].get("source") == SOURCE_MR
+    assert mgr.positions["NOK"]["strike"] == pytest.approx(10)
+    assert mgr.positions["NOK"]["expiry"] == "2026-10-16"
+    assert mgr.positions["IBM"]["strike"] == pytest.approx(250)
+    assert mgr.positions["IBM"]["expiry"] == "2026-10-16"
+    assert "NOK" not in bot.signals
+    assert "IBM" not in bot.signals
+    assert "NOK" not in bot.exit_tfs
+    assert "IBM" not in bot.exit_tfs
+    assert "NOK" not in bot._trade_entries
+    assert bot.signals["SPY"] == "CALL"
+    assert "SPY" in bot.exit_tfs
+    assert mgr.positions["SPY"].get("source") != "mr"
+
+
+def test_auto_adopt_non_orb_run_exit_loop_no_regimes_keyerror(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, _trade, cb = _executor(enabled=True, ask=0.79)
+    bot = _reconcile_bot(
+        monkeypatch,
+        mgr,
+        [{"code": "US.NOK261016C00010000", "qty": 2, "cost_price": 0.79}],
+        cb=cb,
+        mr_ex=ex,
+    )
+    assert "NOK" not in bot.signals
+    assert "NOK" not in bot.regimes
+    bot.quote_ctx = SimpleNamespace()
+    bot.run_exit_loop()
+    assert mgr.has_position("NOK")
+    assert mgr.positions["NOK"].get("source") == SOURCE_MR
+
+
+def test_auto_adopt_non_orb_lock_in_closes_after_restart(monkeypatch):
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, trade, cb = _executor(enabled=True, ask=6.38)
+    bot = _reconcile_bot(
+        monkeypatch,
+        mgr,
+        [{"code": "US.IBM261016C00250000", "qty": 1, "cost_price": 6.38}],
+        cb=cb,
+        mr_ex=ex,
+    )
+    assert mgr.has_position("IBM")
+    assert "IBM" not in bot.signals
+    buys = len(trade.orders)
+    out = ex.consider(_parse_shelf("lock_ibm_call.json"), portfolio_val=10_000)
+    assert out["status"] == "exited"
+    assert out["reason"] == "MR_LOCK_IN"
+    assert mgr.has_position("IBM") is False
+    sells = [o for o in trade.orders[buys:] if o["trd_side"] == TrdSide.SELL]
+    assert len(sells) == 1
+    assert sells[0]["order_type"] == OrderType.MARKET
+
+
+def test_auto_adopt_non_orb_eod_leftover_closes_not_orb_spy(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, trade, cb = _executor(enabled=True, ask=0.79)
+    bot = _reconcile_bot(
+        monkeypatch,
+        mgr,
+        [{"code": "US.NOK261016C00010000", "qty": 2, "cost_price": 0.79}],
+        cb=cb,
+        mr_ex=ex,
+    )
+    mgr.enter("SPY", "CALL", 500.0, 0.01, 10_000.0)
+    assert mgr.has_position("NOK") and mgr.has_position("SPY")
+    assert "NOK" not in bot.signals
+    bot.ops = SimpleNamespace(alert=lambda *_: None, log_alert=lambda *_: None)
+    bot.trade_ctx = SimpleNamespace(
+        position_list_query=lambda **kwargs: (0, pd.DataFrame())
+    )
+    bot.eod_close_all()
+    assert mgr.has_position("NOK") is False
+    assert mgr.has_position("SPY") is True
+    assert mgr.positions["SPY"].get("source") != "mr"
+    sells = [o for o in trade.orders if o["trd_side"] == TrdSide.SELL]
+    assert sells
+    assert all(o["order_type"] == OrderType.MARKET for o in sells)
