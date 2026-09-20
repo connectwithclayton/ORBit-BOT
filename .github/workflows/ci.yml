@@ -36,7 +36,7 @@ jobs:
       - name: Syntax smoke check
         env:
           PYTHONPATH: backend:frontend
-        run: python -m py_compile backend/orb_bot_fabio.py backend/backtest/fabio/*.py backend/fabio_live/*.py backend/signal_intake/*.py
+        run: python -m py_compile backend/orb_bot_fabio.py backend/backtest/fabio/*.py backend/fabio_live/*.py backend/signal_intake/*.py backend/brokers/*.py backend/brokers/tradier/*.py backend/tradier_eod_flatten.py
 
       - name: Run test suite
         env:

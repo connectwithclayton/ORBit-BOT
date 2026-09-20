@@ -28,11 +28,16 @@ from fabio_live.constants import (
 
 class OrderManager:
     """
+    Moomoo OpenD implementation of ``fabio_live.execution.ExecutionPort``.
+
     Entry : limit at ask price; retries at fresh ask every 60 s until fully
             filled or ENTRY_MAX_ATTEMPTS exhausted.
     Trim  : market sell of TRIM_PCT of remaining each time option doubles (ORBIT).
     Exit  : market sell of full remaining position.
     Tracks entry price and rolling P&L for circuit-breaker reporting.
+
+    Default ORB wiring stays here. Tradier paper ``place_order`` is a separate
+    client (``brokers.tradier``) and must not share ``self.positions``.
     """
 
     def __init__(self, trade_ctx, quote_ctx, trd_env):

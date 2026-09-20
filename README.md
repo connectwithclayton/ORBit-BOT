@@ -89,6 +89,17 @@ python3 backend/moomoo_eod_failsafe.py --dry-run --require-after-et
 
 Use `python3 backend/moomoo_eod_failsafe.py --help` for full flags. Schedulers: alert on `1` or `3`; treat `4` as outside the ET window unless the schedule is wrong.
 
+### Tradier paper flatten (isolated; not the ORB default)
+
+Tradier paper `place_order` lives in [`backend/brokers/tradier/`](backend/brokers/tradier/). **ORB still boots Moomoo** `OpenQuoteContext` / `OpenSecTradeContext` / `OrderManager` (`FABIO_BROKER` defaults to `moomoo`). Do not point `moomoo_eod_failsafe.py` at Tradier.
+
+```bash
+PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --dry-run
+PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --scope options
+```
+
+**Paper pin:** `--env` defaults to **`paper`** (sandbox `https://sandbox.tradier.com`). Live `api.tradier.com` / `--env live` requires `FABIO_ALLOW_REAL_TRADING=1`. Tradier does **not** read `MOOMOO_TRADE_ENV`. Closes in the market only; it does not exercise options.
+
 ---
 
 ## Quick start
