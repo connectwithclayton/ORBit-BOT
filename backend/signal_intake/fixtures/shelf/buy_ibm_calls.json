@@ -1,0 +1,19 @@
+{
+  "id": "buy_ibm_calls",
+  "kind": "entry_single_call",
+  "subject": "RRP - Buy IBM Calls",
+  "from": "subscription-alerts@marketrebellion.example.invalid",
+  "date": "2026-09-09T19:33:08Z",
+  "body": "Buy IBM Calls\n\nBuy the October 16th IBM $250 Call for $6.38.\n\nIBM is at $238.62.\n",
+  "expected": {
+    "action": "buy",
+    "symbol": "IBM",
+    "right": "CALL",
+    "expiry": "2026-10-16",
+    "strike": 250,
+    "premium": 6.38,
+    "structure": "single",
+    "legs": 1
+  },
+  "channel": "email"
+}

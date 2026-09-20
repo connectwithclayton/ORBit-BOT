@@ -89,6 +89,9 @@ TELEGRAM_CMD_MIN_INTERVAL_SEC = 2.0
 TELEGRAM_STOP_CONFIRM_TTL_SEC = 30
 OPTIONS_ONLY_EXECUTION = os.getenv("FABIO_OPTIONS_ONLY_EXECUTION", "1") == "1"
 AUTO_ADOPT_OPEN_POSITIONS = os.getenv("FABIO_AUTO_ADOPT_OPEN_POSITIONS", "1") == "1"
+# Slice 4: MR paper auto-trade. Default off — ORB loop unchanged.
+MR_PAPER_ENABLED = os.getenv("FABIO_MR_PAPER_ENABLED", "0") == "1"
+MR_CB_PARTITION = os.getenv("FABIO_MR_CB_PARTITION", "0") == "1"
 
 CB_DAILY_LOSS_PCT = CFG.cb_daily_loss_pct
 CB_MAX_TRADES = CFG.cb_max_trades

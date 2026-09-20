@@ -1,0 +1,20 @@
+{
+  "source": "anonymized shelf (vendor alerts; no captain PII)",
+  "retrieved": "2026-09-20",
+  "note": "Anonymized fixtures for MR signal_intake. Live Gmail remains source of truth; ~201 MR threads in 90d. Categories: Morning Note (RRP), Rebel Roundup (RR), Buy/Trade Log (actionable), Lock in (exits), Model Portfolio, On the Horn.",
+  "query_hint": "docs-only: from:subscription-alerts@marketrebellion.example.invalid (live poller not in repo)",
+  "fixture_ids": [
+    "buy_nok_calls",
+    "buy_tlt_call_vertical",
+    "buy_run_calls",
+    "buy_ibm_calls",
+    "lock_ibm_call"
+  ],
+  "parse_patterns": [
+    "Subject prefixes: RRP - Buy..., RRP - BUY..., RRP - Lock in..., RRP - RRP Trade Log - TICKER, RR - Rebel Roundup...",
+    "Single-leg: Buy the {Month} {D}[th] {SYM} ${strike} Call for ${premium}",
+    "Underlying line: {SYM} is at ${spot}",
+    "Vertical: Buy ... Call for $X and sell ... Call for $Y \u2014 multi-leg SKIP under policy",
+    "Exit: Lock in {SYM} Call For Gain Of {pct}%"
+  ]
+}

@@ -153,6 +153,12 @@ def main() -> None:
         f"(paper/sandbox default; live needs {ALLOW_REAL_ENV}=1). "
         "Does not reuse MOOMOO_TRADE_ENV."
     )
+    mr_on = os.getenv("FABIO_MR_PAPER_ENABLED", "").strip() == "1"
+    print(
+        f"- MR paper auto-trade: {'ON' if mr_on else 'OFF'} "
+        "(FABIO_MR_PAPER_ENABLED; default off — ORB loop unchanged). "
+        "Moomoo SIMULATE OrderManager only; does not enable Tradier dual books."
+    )
 
 
 if __name__ == "__main__":

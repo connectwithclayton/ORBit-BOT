@@ -26,6 +26,17 @@ from fabio_live.constants import (
 )
 
 
+def build_option_code(symbol: str, expiry: str, direction: str, strike: float) -> str:
+    """Moomoo-style OCC code: US.IBM261016C00250000. Never an equity share code."""
+    sym = str(symbol or "").strip().upper()
+    exp = str(expiry or "").strip().replace("-", "")
+    if len(exp) == 8:
+        exp = exp[2:]
+    right = "P" if str(direction).upper() == "PUT" else "C"
+    strike_int = int(round(float(strike) * 1000))
+    return f"US.{sym}{exp}{right}{strike_int:08d}"
+
+
 class OrderManager:
     """
     Moomoo OpenD implementation of ``fabio_live.execution.ExecutionPort``.
@@ -236,12 +247,75 @@ class OrderManager:
             )
             return
         fallback_prem = price * 0.01
+        self._fill_buy(
+            symbol,
+            direction,
+            opt_code,
+            risk_dollars,
+            fallback_prem,
+            risk_pct=risk_pct,
+        )
+
+    def enter_option_contract(
+        self,
+        symbol: str,
+        direction: str,
+        *,
+        strike: float,
+        expiry: str,
+        premium: float | None,
+        risk_pct: float,
+        portfolio_val: float,
+        source: str = "mr",
+    ):
+        """Buy a named expiry/strike (MR paper). Does not map to ATM.
+
+        Closes are market sell-to-close via ``_sell`` / ``exit``; never exercise.
+        """
+        risk_base = min(portfolio_val, STRATEGY_CAPITAL * RESEARCH_RISK_CAP_MULTIPLIER)
+        risk_dollars = risk_base * risk_pct
+        opt_code = build_option_code(symbol, expiry, direction, strike)
+        if OPTIONS_ONLY_EXECUTION and not self._looks_like_option_code(opt_code):
+            print(
+                f"   ✗ [{symbol}] Options-only safety blocked BUY for non-option code: "
+                f"{opt_code}"
+            )
+            return
+        fallback_prem = float(premium) if premium and float(premium) > 0 else max(
+            float(strike) * 0.01, 0.05
+        )
+        self._fill_buy(
+            symbol,
+            direction,
+            opt_code,
+            risk_dollars,
+            fallback_prem,
+            strike=float(strike),
+            expiry=str(expiry),
+            source=source,
+            risk_pct=risk_pct,
+        )
+
+    def _fill_buy(
+        self,
+        symbol: str,
+        direction: str,
+        opt_code: str,
+        risk_dollars: float,
+        fallback_prem: float,
+        *,
+        strike: float | None = None,
+        expiry: str = "",
+        source: str = "",
+        risk_pct: float | None = None,
+    ):
         total_filled = 0
         entry_price = 0.0
+        risk_tag = f" ({risk_pct*100:.2f}%)" if risk_pct is not None else ""
 
         print(
             f"\n → [{symbol}] ENTER {direction} | {opt_code} | "
-            f"Risk=${risk_dollars:.0f} ({risk_pct*100:.2f}%)"
+            f"Risk=${risk_dollars:.0f}{risk_tag}"
         )
 
         for attempt in range(1, ENTRY_MAX_ATTEMPTS + 1):
@@ -314,7 +388,7 @@ class OrderManager:
                 print("   ⚠  Cancel failure on partial/unfilled order; stale working risk.")
 
         if total_filled > 0:
-            self.positions[symbol] = {
+            rec = {
                 "direction": direction,
                 "code": opt_code,
                 "original_qty": total_filled,
@@ -323,6 +397,13 @@ class OrderManager:
                 "trim_level": 0,
                 "realized_trim_pnl": 0.0,
             }
+            if strike is not None:
+                rec["strike"] = float(strike)
+            if expiry:
+                rec["expiry"] = str(expiry)
+            if source:
+                rec["source"] = source
+            self.positions[symbol] = rec
             print(
                 f"   ✓ Position recorded: {symbol} {direction} "
                 f"× {total_filled} contracts @ ${entry_price:.2f}"

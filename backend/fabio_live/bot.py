@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 import time
 from typing import Any
@@ -38,6 +39,8 @@ from fabio_live.constants import (
     HEALTH_SNAPSHOT_RETENTION_DAYS,
     MAIN_LOOP_SLEEP_ACTIVE_SEC,
     MARKET_TIMEZONE,
+    MR_CB_PARTITION,
+    MR_PAPER_ENABLED,
     OPS_ALERT_COOLDOWN_SEC,
     OPS_DASHBOARD_OPEN_REFRESH_THROTTLE_SEC,
     OPS_DASHBOARD_REFRESH_THROTTLE_SEC,
@@ -194,6 +197,12 @@ class ORBBot:
         self.trd_env = trd_env
         self.order_mgr = OrderManager(self.trade_ctx, self.quote_ctx, trd_env)
         self.cb = RiskCircuitBreaker()
+        self._mr_executor = None
+        self._mr_queue: list[dict] = []
+        self._mr_queue_offset = 0
+        self._mr_store = None
+        if MR_PAPER_ENABLED:
+            self._init_mr_paper_executor()
         self.regimes = {}
         self.signals = {}
         self.exit_tfs = {}
@@ -1042,6 +1051,9 @@ class ORBBot:
         self.cb.set_portfolio_open(portfolio_val)
         self._capital_at_open = portfolio_val
         self._hydrate_circuit_from_sheets_today()
+        mr_ex = getattr(self, "_mr_executor", None)
+        if mr_ex is not None and mr_ex.cb is not self.cb:
+            mr_ex.cb.set_portfolio_open(portfolio_val)
 
         for sym in SYMBOLS:
             if self._prefetched and sym in self._prefetch_daily:
@@ -1083,6 +1095,86 @@ class ORBBot:
             except Exception as e:
                 print(f"  ⚠  [{sym}] Signal loop error — skipping symbol: {e}")
                 self.ops.alert(f"⚠️ <b>FABIO signal loop error [{sym}]</b>\n{e}")
+        self._drain_mr_paper(allow_entries=True)
+
+    def _init_mr_paper_executor(self) -> None:
+        """Construct MR paper executor. Default ORB path never calls this."""
+        from fabio_live.mr_paper import MrPaperExecutor
+        from signal_intake.ids import IdempotencyStore
+
+        mr_cb = RiskCircuitBreaker() if MR_CB_PARTITION else self.cb
+        orb_cb = self.cb if mr_cb is not self.cb else None
+        self._mr_store = IdempotencyStore()
+        self._mr_executor = MrPaperExecutor(
+            self.order_mgr,
+            mr_cb,
+            orb_cb=orb_cb,
+            ops=self.ops,
+            paper_only=True,
+            enabled=True,
+            get_portfolio=lambda: min(
+                get_portfolio_value(self.trade_ctx),
+                STRATEGY_CAPITAL * RESEARCH_RISK_CAP_MULTIPLIER,
+            ),
+        )
+
+    def _drain_mr_paper(self, allow_entries: bool = True) -> None:
+        """No-op unless FABIO_MR_PAPER_ENABLED constructed an executor."""
+        executor = getattr(self, "_mr_executor", None)
+        if executor is None:
+            return
+        from fabio_live.mr_paper import MR_QUEUE_PATH_ENV
+        from signal_intake.parse import parse_payload
+
+        payloads: list[dict] = list(getattr(self, "_mr_queue", []) or [])
+        if hasattr(self, "_mr_queue"):
+            self._mr_queue.clear()
+        path = os.getenv(MR_QUEUE_PATH_ENV, "").strip()
+        if path:
+            payloads.extend(self._read_mr_queue_file(path))
+        if not payloads:
+            return
+        store = getattr(self, "_mr_store", None)
+        port = min(
+            get_portfolio_value(self.trade_ctx),
+            STRATEGY_CAPITAL * RESEARCH_RISK_CAP_MULTIPLIER,
+        )
+        for payload in payloads:
+            try:
+                intent = parse_payload(payload, store=store)
+                executor.consider(
+                    intent, portfolio_val=port, allow_entries=allow_entries
+                )
+            except Exception as e:
+                print(f"  ⚠  [mr_paper] drain error: {e}")
+
+    def _read_mr_queue_file(self, path: str) -> list[dict]:
+        import json
+        from pathlib import Path
+
+        p = Path(path)
+        if not p.is_file():
+            return []
+        try:
+            raw = p.read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"  ⚠  [mr_paper] queue read failed: {e}")
+            return []
+        offset = int(getattr(self, "_mr_queue_offset", 0) or 0)
+        chunk = raw[offset:]
+        self._mr_queue_offset = len(raw)
+        out: list[dict] = []
+        for line in chunk.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                out.append(row)
+        return out
 
     def _process_signal(self, sym: str):
         if sym not in self.regimes:
@@ -1648,6 +1740,30 @@ class ORBBot:
                     "EXIT_FAIL", f"{sym} EOD exit failed: {result.get('error', 'unknown')}", sym
                 )
 
+        # Flatten leftover tracked positions (MR paper on the same OrderManager).
+        # Market sell-to-close only — never exercise.
+        leftover = list(getattr(self.order_mgr, "positions", {}) or {})
+        for sym in leftover:
+            if sym in self.signals:
+                continue
+            pos = self.order_mgr.positions.get(sym) or {}
+            direction = pos.get("direction", "")
+            result = self.order_mgr.exit_result(sym, reason="EOD")
+            if result.get("success"):
+                pnl = float(result.get("pnl", 0.0))
+                mr_ex = getattr(self, "_mr_executor", None)
+                if mr_ex is not None and mr_ex.owns(sym):
+                    mr_ex.record_close(pnl)
+                    mr_ex._owned.discard(sym)
+                else:
+                    self.cb.record_result(pnl)
+                print(f"  [EOD] Flattened leftover {sym} {direction} pnl={pnl:+.0f}")
+            else:
+                self.ops.alert(
+                    f"⚠️ <b>EOD leftover exit failed [{sym}]</b>\n"
+                    f"error={result.get('error', 'unknown')}"
+                )
+
         print("\n  [EOD] Sweeping Moomoo account for any remaining open positions...")
         try:
             ret, pos_df = self.trade_ctx.position_list_query(
@@ -1827,6 +1943,9 @@ class ORBBot:
 
             if or_close <= now <= signal_end:
                 self.run_signal_loop()
+            elif or_close <= now < eod_close:
+                # Lock-in exits after the ORB entry window; no new MR buys.
+                self._drain_mr_paper(allow_entries=False)
 
             if self.signals:
                 self.run_exit_loop()
@@ -1840,6 +1959,9 @@ class ORBBot:
                 self.regimes.clear()
                 self.exit_tfs.clear()
                 self.cb.reset()
+                mr_ex = getattr(self, "_mr_executor", None)
+                if mr_ex is not None and mr_ex.cb is not self.cb:
+                    mr_ex.cb.reset()
                 self._cb_logged.clear()
                 _eod_closed = True
 

@@ -9,12 +9,14 @@ from zoneinfo import ZoneInfo
 
 from signal_intake.ids import IdempotencyStore, make_raw_id
 from signal_intake.models import (
+    ACTION_EXIT,
     DECISION_SHADOW,
     DECISION_SKIP,
     MODE_SHADOW,
     SOURCE_MR,
     NormalizedIntent,
 )
+from signal_intake.rrp_email import parse_rrp_overlay
 
 ET = ZoneInfo("America/New_York")
 
@@ -59,6 +61,7 @@ _MULTI_TEXT = re.compile(
     r"straddles?|strangles?|combos?|"
     r"(?:call|put|debit|credit|vertical|calendar|diagonal)\s+spreads?|"
     r"spreads?|"  # captain B: bare spread(s) is multi-leg (bid-ask false SKIP OK)
+    r"verticals?|"  # "Call Vertical" / bare vertical (captain B TLT SKIP)
     r"multi[\s-]?legs?"
     r")\b",
     re.I,
@@ -226,6 +229,18 @@ def _blob(payload: dict[str, Any]) -> str:
         str(payload.get("body_text") or payload.get("body") or payload.get("text") or ""),
     ]
     return "\n".join(parts)
+
+
+def _as_of_datetime(ts: str) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ET)
+    return dt.astimezone(ET)
 
 
 def _extract_symbol(payload: dict[str, Any], text: str) -> str:
@@ -401,6 +416,7 @@ def _reason(
     skip: str | None,
     symbol: str,
     direction: str,
+    action: str = "",
 ) -> str:
     parts = [
         f"source={SOURCE_MR}",
@@ -415,7 +431,10 @@ def _reason(
     if skip:
         parts.append(f"skip={skip}")
     else:
-        parts.append(f"mapped={symbol} {direction}".rstrip())
+        mapped = f"mapped={symbol} {direction}".rstrip()
+        if action:
+            mapped = f"{mapped} action={action}".rstrip()
+        parts.append(mapped)
     return " | ".join(parts)
 
 
@@ -436,40 +455,81 @@ def parse_payload(
         or payload.get("as_of_et")
         or payload.get("as_of")
         or payload.get("ts")
+        or payload.get("date")
     )
+    if channel == "unknown" and re.search(r"\b(?:rrp|rr)\b", text, re.I):
+        channel = "email"
     symbol = _extract_symbol(payload, text)
     direction, instrument, extract_skip = _extract_direction_and_instrument(
         payload, text
     )
     confidence = parse_confidence(payload.get("confidence"), text)
+    overlay = parse_rrp_overlay(payload, text, as_of=_as_of_datetime(ts or ""))
+    action = str(overlay.get("action") or "")
+    expiry = str(overlay.get("expiry") or "")
+    strike = overlay.get("strike")
+    premium = overlay.get("premium")
+    contract_key = str(overlay.get("contract_key") or "")
+    if overlay.get("symbol"):
+        symbol = str(overlay["symbol"])
+    if overlay.get("direction"):
+        direction = str(overlay["direction"])
+        instrument = str(overlay.get("instrument") or instrument or "option")
 
     skip: str | None = None
     if store is not None and store.seen_or_add(raw_id):
         skip = SKIP_DUPLICATE
-    elif _is_multi_leg(payload, text):
+    elif overlay.get("rrp_multi_leg") or _is_multi_leg(payload, text):
         skip = SKIP_MULTI_LEG
         direction = ""
         instrument = ""
+        action = ""
+        expiry = ""
+        strike = None
+        premium = None
+        contract_key = ""
     elif extract_skip:
         skip = extract_skip
         direction = ""
         instrument = ""
+        action = ""
+        expiry = ""
+        strike = None
+        premium = None
+        contract_key = ""
     elif not ts:
         skip = SKIP_MISSING_TS
         direction = ""
         instrument = ""
+        action = ""
     elif not symbol or direction not in ("CALL", "PUT", "EQUITY"):
         skip = SKIP_UNPARSEABLE
         direction = ""
         instrument = ""
+        action = ""
         if not symbol:
             symbol = "UNKNOWN"
+    elif (
+        store is not None
+        and action != ACTION_EXIT
+        and contract_key
+        and store.seen_contract_or_add(contract_key)
+    ):
+        skip = SKIP_DUPLICATE
 
     if skip:
         decision = DECISION_SKIP
         accepted = False
         if not symbol:
             symbol = "UNKNOWN"
+        keep_contract = skip == SKIP_DUPLICATE and bool(contract_key)
+        if not keep_contract:
+            action = ""
+            expiry = ""
+            strike = None
+            premium = None
+            if skip != SKIP_DUPLICATE:
+                contract_key = ""
     else:
         decision = DECISION_SHADOW
         accepted = True
@@ -481,7 +541,9 @@ def parse_payload(
         skip=skip,
         symbol=symbol,
         direction=direction,
+        action=action if accepted else "",
     )
+    keep_fields = accepted or (skip == SKIP_DUPLICATE and bool(contract_key))
     return NormalizedIntent(
         source=SOURCE_MR,
         symbol=symbol,
@@ -495,4 +557,9 @@ def parse_payload(
         accepted=accepted,
         skip=skip,
         channel=channel,
+        action=action if keep_fields else "",
+        expiry=expiry if accepted else "",
+        strike=float(strike) if accepted and strike is not None else None,
+        premium=float(premium) if accepted and premium is not None else None,
+        contract_key=contract_key if keep_fields else "",
     )

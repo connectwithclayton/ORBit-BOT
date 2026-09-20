@@ -1,0 +1,16 @@
+{
+  "id": "lock_ibm_call",
+  "kind": "exit_take_profit",
+  "subject": "RRP - Lock in IBM Call For Gain Of 72.41%",
+  "from": "subscription-alerts@marketrebellion.example.invalid",
+  "date": "2026-09-14T17:41:32Z",
+  "body": "Lock in IBM Call For Gain Of 72.41%\n\nLast Wednesday we bought the October 16th IBM $250 Call for $6.38.\n\nIBM was at $238.62 and is now at $250.92.\n\nThe $250 Call is at $11.00 for a gain of $4.62 which is 72.41%.\n",
+  "expected": {
+    "action": "exit",
+    "symbol": "IBM",
+    "right": "CALL",
+    "expiry": "2026-10-16",
+    "strike": 250
+  },
+  "channel": "email"
+}

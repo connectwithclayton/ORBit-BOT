@@ -12,6 +12,7 @@ from signal_intake.parse import parse_payload
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 FIXTURE_DIR = PACKAGE_DIR / "fixtures"
+SHELF_DIR = FIXTURE_DIR / "shelf"
 GOLDEN_PATH = PACKAGE_DIR / "expected" / "replay_golden.json"
 
 
