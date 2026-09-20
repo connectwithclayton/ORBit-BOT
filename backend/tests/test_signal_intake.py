@@ -38,11 +38,19 @@ FORBIDDEN_IMPORT_ROOTS = {
     "moomoo",
     "futu",
     "tradier",
+    "brokers",
     "fabio_live",
     "config",
 }
 
-FORBIDDEN_NAMES = {"place_order", "OpenSecTradeContext", "OpenD", "OrderManager"}
+FORBIDDEN_NAMES = {
+    "place_order",
+    "OpenSecTradeContext",
+    "OpenD",
+    "OrderManager",
+    "TradierPaperClient",
+    "isolated_place_order_client",
+}
 
 
 class _RecordingOps:

@@ -30,7 +30,13 @@ from config import (
     TG_TOKEN,
 )
 from backtest.fabio.settings import FabioBacktestSettings
-from paper_pin import ALLOW_REAL_ENV, allow_real_trading_enabled, is_real_trd_env
+from brokers.names import resolve_execution_broker
+from paper_pin import (
+    ALLOW_REAL_ENV,
+    allow_real_trading_enabled,
+    is_real_trd_env,
+    resolve_tradier_env_name,
+)
 
 
 def _mask(value: str) -> str:
@@ -83,6 +89,14 @@ def main() -> None:
         "telegram_group_chat_id": _mask(TG_GROUP_ID),
         "google_sheet_id": _mask(GOOGLE_SHEET_ID),
         "google_creds_path": GOOGLE_CREDS_PATH or "(not set)",
+        "fabio_broker": resolve_execution_broker(),
+        "tradier_env": resolve_tradier_env_name(),
+        "tradier_account_id": _mask(os.getenv("TRADIER_ACCOUNT_ID", "")),
+        "tradier_access_token": (
+            "(set)"
+            if (os.getenv("TRADIER_ACCESS_TOKEN") or os.getenv("TRADIER_TOKEN"))
+            else "(not set)"
+        ),
     }
 
     print("Fabio effective runtime config")
@@ -128,6 +142,17 @@ def main() -> None:
             "- Moomoo: SIMULATE — paper-style environment "
             f"(REAL also needs {ALLOW_REAL_ENV}=1; do not set it for paper)."
         )
+    broker = resolve_execution_broker()
+    print(
+        f"- FABIO_BROKER={broker} (default moomoo). "
+        "ORB live path still constructs Moomoo OpenQuoteContext / "
+        "OpenSecTradeContext / OrderManager; Tradier is isolated place_order + flatten."
+    )
+    print(
+        f"- Tradier flatten: env={resolve_tradier_env_name()} "
+        f"(paper/sandbox default; live needs {ALLOW_REAL_ENV}=1). "
+        "Does not reuse MOOMOO_TRADE_ENV."
+    )
 
 
 if __name__ == "__main__":
