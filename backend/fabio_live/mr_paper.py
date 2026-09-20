@@ -7,13 +7,17 @@ through ``RiskCircuitBreaker.can_enter`` + the same sizing formula into
 Does not touch ``SignalEngine.check_breakout`` or ``MarketRegime``.
 Does not enable Tradier dual books (slice 5). A Tradier paper adapter may
 exist for isolated ``place_order``; this executor still uses Moomoo
-``OrderManager`` only. Never exercises; EOD still market-closes via
-``OrderManager._sell``.
+``OrderManager`` only. Hard isolate: MR never overwrites ORB ``positions[symbol]``;
+lock-in / MR leftover sells only close ``source=mr`` (or executor-owned) legs;
+SPY/QQQ/NVDA entries are denied unless ``FABIO_MR_ALLOW_ORB_SYMBOLS=1``.
+Never exercises; EOD still market-closes via ``OrderManager._sell``.
 """
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
 from fabio_live.circuit import RiskCircuitBreaker
@@ -24,13 +28,16 @@ from fabio_live.constants import (
     RISK_PCT_FULL,
     RISK_PCT_MAX,
     STRATEGY_CAPITAL,
+    SYMBOLS,
 )
 from paper_pin import enforce_paper_trading_pin, is_real_trd_env
+from signal_intake.ids import IdempotencyStore
 from signal_intake.models import ACTION_BUY, ACTION_EXIT, SOURCE_MR, NormalizedIntent
 
 MR_PAPER_ENABLED_ENV = "FABIO_MR_PAPER_ENABLED"
 MR_CB_PARTITION_ENV = "FABIO_MR_CB_PARTITION"
 MR_QUEUE_PATH_ENV = "FABIO_MR_QUEUE_PATH"
+MR_ALLOW_ORB_SYMBOLS_ENV = "FABIO_MR_ALLOW_ORB_SYMBOLS"
 
 SKIP_DISABLED = "mr_paper_disabled"
 SKIP_NOT_ACCEPTED = "not_accepted"
@@ -38,11 +45,15 @@ SKIP_MULTI_LEG = "multi-leg"
 SKIP_EQUITY_OPTIONS_ONLY = "options_only_blocks_shares"
 SKIP_NO_CONTRACT = "missing_contract"
 SKIP_NOT_OPEN = "not_open"
+SKIP_NOT_MR = "not_mr_position"
+SKIP_UNDERLYING_OCCUPIED = "underlying_occupied"
+SKIP_ORB_SYMBOL = "orb_symbol_denied"
 SKIP_REAL_REFUSED = "real_refused"
 SKIP_CB = "circuit_breaker"
 SKIP_COMBINED_DAILY_LOSS = "combined_daily_loss"
 SKIP_ENTRIES_CLOSED = "entries_window_closed"
 SKIP_NO_FILL = "no_fill"
+SKIP_NO_CURSOR = "queue_cursor_missing"
 
 
 class _OrderMgr(Protocol):
@@ -100,6 +111,149 @@ def combined_daily_loss_blocks(
     return False, ""
 
 
+def mr_allow_orb_symbols() -> bool:
+    return os.getenv(MR_ALLOW_ORB_SYMBOLS_ENV, "").strip() == "1"
+
+
+def orb_entry_deny_symbols() -> frozenset[str]:
+    """SPY/QQQ/NVDA (live ORB universe) unless FABIO_MR_ALLOW_ORB_SYMBOLS=1."""
+    if mr_allow_orb_symbols():
+        return frozenset()
+    return frozenset(s.upper() for s in SYMBOLS)
+
+
+def is_mr_position(pos: dict | None, *, owned: bool = False) -> bool:
+    """True only for tagged MR legs (or same-process executor ownership)."""
+    if not pos:
+        return False
+    if str(pos.get("source") or "").strip().lower() == SOURCE_MR:
+        return True
+    return bool(owned)
+
+
+def queue_cursor_path(queue_path: str) -> Path:
+    return Path(str(queue_path) + ".cursor.json")
+
+
+class DurableMrCursor:
+    """Byte offset + idempotency beside FABIO_MR_QUEUE_PATH.
+
+    Restarts load this file so retained JSONL is not re-drained. If the queue
+    file has content and no cursor can be loaded or saved, file drain is refused.
+    """
+
+    def __init__(self, queue_path: str, *, store: IdempotencyStore | None = None) -> None:
+        self.queue_path = str(queue_path)
+        self.path = queue_cursor_path(self.queue_path)
+        self.offset = 0
+        self.store = store if store is not None else IdempotencyStore()
+        self.refused = False
+        self.refuse_reason = ""
+
+    def load_or_create(self) -> bool:
+        """Load cursor, or create offset=0. Refuse if queue has bytes and load fails."""
+        q = Path(self.queue_path)
+        queue_bytes = 0
+        if q.is_file():
+            try:
+                queue_bytes = q.stat().st_size
+            except OSError:
+                queue_bytes = 0
+        if self.path.is_file():
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                self.refused = True
+                self.refuse_reason = f"cursor unreadable: {exc}"
+                return False
+            if not isinstance(data, dict):
+                self.refused = True
+                self.refuse_reason = "cursor is not a JSON object"
+                return False
+            try:
+                self.offset = int(data.get("offset") or 0)
+            except (TypeError, ValueError):
+                self.offset = 0
+            if self.offset < 0:
+                self.offset = 0
+            self.store.load_durable_dict(data)
+            return True
+        if queue_bytes > 0:
+            # Retained JSONL without a cursor — do not re-fire paper entries.
+            self.refused = True
+            self.refuse_reason = (
+                f"refusing to drain {self.queue_path} without durable cursor "
+                f"{self.path}"
+            )
+            return False
+        return self.save()
+
+    def save(self) -> bool:
+        payload = self.store.to_durable_dict()
+        payload["offset"] = int(self.offset)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            tmp.replace(self.path)
+        except OSError as exc:
+            self.refused = True
+            self.refuse_reason = f"cursor save failed: {exc}"
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False
+        return True
+
+    def next_rows(self) -> list[tuple[dict[str, Any] | None, int]] | None:
+        """New JSON objects with the byte offset after each line. Does not save.
+
+        ``None`` payload means a blank/invalid line that still advances the
+        cursor. Caller must ``commit_offset`` after each consider so a restart
+        cannot re-place. Return value ``None`` (not a list) means refuse.
+        """
+        if self.refused:
+            return None
+        q = Path(self.queue_path)
+        if not q.is_file():
+            return []
+        try:
+            raw = q.read_bytes()
+        except OSError as exc:
+            self.refused = True
+            self.refuse_reason = f"queue read failed: {exc}"
+            return None
+        start = self.offset
+        if start > len(raw):
+            start = 0
+        out: list[tuple[dict[str, Any] | None, int]] = []
+        pos = start
+        for line in raw[start:].splitlines(keepends=True):
+            pos += len(line)
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text:
+                out.append((None, pos))
+                continue
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                out.append((None, pos))
+                continue
+            if isinstance(parsed, dict):
+                out.append((parsed, pos))
+            else:
+                out.append((None, pos))
+        return out
+
+    def commit_offset(self, offset: int) -> bool:
+        self.offset = max(0, int(offset))
+        return self.save()
+
+
 class MrPaperExecutor:
     """Run accepted MR intents through the existing CB + Moomoo paper OrderManager."""
 
@@ -136,6 +290,9 @@ class MrPaperExecutor:
     def owns(self, symbol: str) -> bool:
         return symbol in self._owned
 
+    def release(self, symbol: str) -> None:
+        self._owned.discard(symbol)
+
     def record_close(self, pnl: float) -> None:
         self.cb.record_result(pnl)
 
@@ -165,6 +322,19 @@ class MrPaperExecutor:
 
         if not allow_entries:
             return self._skip(intent, SKIP_ENTRIES_CLOSED)
+
+        deny = orb_entry_deny_symbols()
+        if intent.symbol and intent.symbol.upper() in deny:
+            return self._skip(intent, SKIP_ORB_SYMBOL, detail=intent.symbol.upper())
+
+        if self.order_mgr.has_position(intent.symbol):
+            existing = self.order_mgr.positions.get(intent.symbol) or {}
+            tag = existing.get("source") or "unmarked"
+            return self._skip(
+                intent,
+                SKIP_UNDERLYING_OCCUPIED,
+                detail=f"{intent.symbol} source={tag}",
+            )
 
         if intent.direction == "EQUITY" or intent.instrument == "equity":
             if self.options_only:
@@ -213,8 +383,11 @@ class MrPaperExecutor:
         )
         if not self.order_mgr.has_position(intent.symbol):
             return self._skip(intent, SKIP_NO_FILL)
-        self._owned.add(intent.symbol)
         pos = self.order_mgr.positions.get(intent.symbol, {})
+        if not is_mr_position(pos, owned=False):
+            # Safety: never take ownership of an unmarked/ORB overwrite.
+            return self._skip(intent, SKIP_UNDERLYING_OCCUPIED, detail="untagged_after_enter")
+        self._owned.add(intent.symbol)
         return {
             "status": "entered",
             "source": SOURCE_MR,
@@ -228,9 +401,16 @@ class MrPaperExecutor:
         }
 
     def _lock_in(self, intent: NormalizedIntent) -> dict[str, Any]:
-        if not self.order_mgr.has_position(intent.symbol):
+        pos = self.order_mgr.positions.get(intent.symbol)
+        if not pos:
             return self._skip(intent, SKIP_NOT_OPEN)
-        pos = self.order_mgr.positions.get(intent.symbol, {})
+        owned = self.owns(intent.symbol)
+        if not is_mr_position(pos, owned=owned):
+            return self._skip(
+                intent,
+                SKIP_NOT_MR,
+                detail=f"{intent.symbol} source={pos.get('source') or 'unmarked'}",
+            )
         if intent.strike is not None and pos.get("strike") is not None:
             if float(pos["strike"]) != float(intent.strike):
                 return self._skip(intent, SKIP_NOT_OPEN, detail="strike_mismatch")
@@ -241,7 +421,7 @@ class MrPaperExecutor:
             return self._skip(intent, result.get("error") or "exit_failed")
         pnl = float(result.get("pnl", 0.0) or 0.0)
         self.cb.record_result(pnl)
-        self._owned.discard(intent.symbol)
+        self.release(intent.symbol)
         self._log_decision(
             intent,
             "EXIT",

@@ -201,6 +201,7 @@ class ORBBot:
         self._mr_queue: list[dict] = []
         self._mr_queue_offset = 0
         self._mr_store = None
+        self._mr_cursor = None
         if MR_PAPER_ENABLED:
             self._init_mr_paper_executor()
         self.regimes = {}
@@ -1099,12 +1100,20 @@ class ORBBot:
 
     def _init_mr_paper_executor(self) -> None:
         """Construct MR paper executor. Default ORB path never calls this."""
-        from fabio_live.mr_paper import MrPaperExecutor
+        from fabio_live.mr_paper import DurableMrCursor, MR_QUEUE_PATH_ENV, MrPaperExecutor
         from signal_intake.ids import IdempotencyStore
 
         mr_cb = RiskCircuitBreaker() if MR_CB_PARTITION else self.cb
         orb_cb = self.cb if mr_cb is not self.cb else None
         self._mr_store = IdempotencyStore()
+        self._mr_cursor = None
+        queue_path = os.getenv(MR_QUEUE_PATH_ENV, "").strip()
+        if queue_path:
+            cursor = DurableMrCursor(queue_path, store=self._mr_store)
+            if not cursor.load_or_create():
+                print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
+            self._mr_cursor = cursor
+            self._mr_queue_offset = int(cursor.offset)
         self._mr_executor = MrPaperExecutor(
             self.order_mgr,
             mr_cb,
@@ -1123,23 +1132,18 @@ class ORBBot:
         executor = getattr(self, "_mr_executor", None)
         if executor is None:
             return
-        from fabio_live.mr_paper import MR_QUEUE_PATH_ENV
         from signal_intake.parse import parse_payload
 
         payloads: list[dict] = list(getattr(self, "_mr_queue", []) or [])
         if hasattr(self, "_mr_queue"):
             self._mr_queue.clear()
-        path = os.getenv(MR_QUEUE_PATH_ENV, "").strip()
-        if path:
-            payloads.extend(self._read_mr_queue_file(path))
-        if not payloads:
-            return
         store = getattr(self, "_mr_store", None)
         port = min(
             get_portfolio_value(self.trade_ctx),
             STRATEGY_CAPITAL * RESEARCH_RISK_CAP_MULTIPLIER,
         )
-        for payload in payloads:
+
+        def _run(payload: dict) -> None:
             try:
                 intent = parse_payload(payload, store=store)
                 executor.consider(
@@ -1148,33 +1152,26 @@ class ORBBot:
             except Exception as e:
                 print(f"  ⚠  [mr_paper] drain error: {e}")
 
-    def _read_mr_queue_file(self, path: str) -> list[dict]:
-        import json
-        from pathlib import Path
-
-        p = Path(path)
-        if not p.is_file():
-            return []
-        try:
-            raw = p.read_text(encoding="utf-8")
-        except OSError as e:
-            print(f"  ⚠  [mr_paper] queue read failed: {e}")
-            return []
-        offset = int(getattr(self, "_mr_queue_offset", 0) or 0)
-        chunk = raw[offset:]
-        self._mr_queue_offset = len(raw)
-        out: list[dict] = []
-        for line in chunk.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict):
-                out.append(row)
-        return out
+        for payload in payloads:
+            _run(payload)
+        cursor = getattr(self, "_mr_cursor", None)
+        if cursor is not None:
+            if payloads:
+                cursor.save()
+            if cursor.refused:
+                print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
+                return
+            rows = cursor.next_rows()
+            if rows is None:
+                print(f"  ⚠  [mr_paper] {cursor.refuse_reason or 'queue cursor refused'}")
+                return
+            for payload, end_off in rows:
+                if payload:
+                    _run(payload)
+                if not cursor.commit_offset(end_off):
+                    print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
+                    return
+            self._mr_queue_offset = int(cursor.offset)
 
     def _process_signal(self, sym: str):
         if sym not in self.regimes:
@@ -1740,24 +1737,29 @@ class ORBBot:
                     "EXIT_FAIL", f"{sym} EOD exit failed: {result.get('error', 'unknown')}", sym
                 )
 
-        # Flatten leftover tracked positions (MR paper on the same OrderManager).
-        # Market sell-to-close only — never exercise.
+        # Flatten leftover MR-tagged tracked positions only (hard isolate).
+        # Never market-close unmarked / ORB legs from this loop. No exercise.
+        from fabio_live.mr_paper import is_mr_position
+
         leftover = list(getattr(self.order_mgr, "positions", {}) or {})
+        mr_ex = getattr(self, "_mr_executor", None)
         for sym in leftover:
             if sym in self.signals:
                 continue
             pos = self.order_mgr.positions.get(sym) or {}
+            owned = bool(mr_ex is not None and mr_ex.owns(sym))
+            if not is_mr_position(pos, owned=owned):
+                continue
             direction = pos.get("direction", "")
             result = self.order_mgr.exit_result(sym, reason="EOD")
             if result.get("success"):
                 pnl = float(result.get("pnl", 0.0))
-                mr_ex = getattr(self, "_mr_executor", None)
-                if mr_ex is not None and mr_ex.owns(sym):
+                if mr_ex is not None:
                     mr_ex.record_close(pnl)
-                    mr_ex._owned.discard(sym)
+                    mr_ex.release(sym)
                 else:
                     self.cb.record_result(pnl)
-                print(f"  [EOD] Flattened leftover {sym} {direction} pnl={pnl:+.0f}")
+                print(f"  [EOD] Flattened leftover MR {sym} {direction} pnl={pnl:+.0f}")
             else:
                 self.ops.alert(
                     f"⚠️ <b>EOD leftover exit failed [{sym}]</b>\n"

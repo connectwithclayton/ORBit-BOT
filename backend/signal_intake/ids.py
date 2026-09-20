@@ -59,3 +59,14 @@ class IdempotencyStore:
             return True
         self._contracts.add(contract_key)
         return False
+
+    def to_durable_dict(self) -> dict[str, Any]:
+        return {
+            "seen": sorted(self._seen),
+            "contracts": sorted(self._contracts),
+        }
+
+    def load_durable_dict(self, payload: dict[str, Any] | None) -> None:
+        data = payload or {}
+        self._seen = {str(x) for x in (data.get("seen") or [])}
+        self._contracts = {str(x) for x in (data.get("contracts") or [])}

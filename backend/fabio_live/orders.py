@@ -284,6 +284,13 @@ class OrderManager:
         fallback_prem = float(premium) if premium and float(premium) > 0 else max(
             float(strike) * 0.01, 0.05
         )
+        if symbol in self.positions:
+            print(
+                f"   ✗ [{symbol}] MR enter refused — underlying already tracked "
+                f"(source={self.positions[symbol].get('source') or 'unmarked'}). "
+                "Will not overwrite OrderManager.positions."
+            )
+            return
         self._fill_buy(
             symbol,
             direction,

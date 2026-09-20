@@ -18,13 +18,18 @@ from fabio_live.constants import (
     STRATEGY_CAPITAL,
 )
 from fabio_live.mr_paper import (
+    MR_ALLOW_ORB_SYMBOLS_ENV,
     MR_PAPER_ENABLED_ENV,
     SKIP_COMBINED_DAILY_LOSS,
     SKIP_DISABLED,
     SKIP_EQUITY_OPTIONS_ONLY,
     SKIP_MULTI_LEG,
+    SKIP_NOT_MR,
     SKIP_NOT_OPEN,
+    SKIP_ORB_SYMBOL,
     SKIP_REAL_REFUSED,
+    SKIP_UNDERLYING_OCCUPIED,
+    DurableMrCursor,
     MrPaperExecutor,
     combined_daily_loss_blocks,
     mr_paper_enabled,
@@ -278,11 +283,11 @@ def test_cb_same_limits_max_open_and_daily_loss(monkeypatch):
     assert mgr.open_count() == CB_MAX_OPEN_POS
     extra = parse_payload(
         {
-            "id": "buy_extra_spy",
+            "id": "buy_extra_amd",
             "channel": "email",
-            "subject": "RRP - Buy SPY Calls",
+            "subject": "RRP - Buy AMD Calls",
             "date": "2026-09-16T16:00:00Z",
-            "body": "Buy the October 16th SPY $500 Call for $1.00.\n",
+            "body": "Buy the October 16th AMD $150 Call for $1.00.\n",
         },
         store=store,
     )
@@ -495,3 +500,260 @@ def test_atm_enter_still_used_by_orb_not_mr_strike(monkeypatch):
     assert mgr.has_position("SPY")
     assert mgr.positions["SPY"]["code"] == "US.SPY261016C00500000"
     assert mgr.positions["SPY"].get("source") != "mr"
+
+
+def _spy_lock_payload() -> dict:
+    return {
+        "id": "lock_spy_call",
+        "channel": "email",
+        "kind": "exit_take_profit",
+        "subject": "RRP - Lock in SPY Call For Gain Of 10%",
+        "date": "2026-09-16T16:00:00Z",
+        "body": (
+            "Lock in SPY Call For Gain Of 10%\n\n"
+            "Last Wednesday we bought the October 16th SPY $500 Call for $1.00.\n"
+        ),
+    }
+
+
+def _spy_buy_payload() -> dict:
+    return {
+        "id": "buy_spy_calls",
+        "channel": "email",
+        "subject": "RRP - Buy SPY Calls",
+        "date": "2026-09-16T15:00:00Z",
+        "body": "Buy the October 16th SPY $500 Call for $1.00.\n",
+    }
+
+
+def test_lock_in_does_not_flatten_unmarked_orb_spy_leg(monkeypatch):
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, trade, _cb = _executor(enabled=True, ask=1.0)
+    mgr.enter("SPY", "CALL", 500.0, 0.01, 10_000.0)
+    orb_code = mgr.positions["SPY"]["code"]
+    buys = len(trade.orders)
+    lock = parse_payload(_spy_lock_payload())
+    assert lock.accepted is True
+    assert lock.action == ACTION_EXIT
+    assert lock.symbol == "SPY"
+    out = ex.consider(lock, portfolio_val=10_000)
+    assert out["placed"] is False
+    assert out["skip"] == SKIP_NOT_MR
+    assert mgr.has_position("SPY") is True
+    assert mgr.positions["SPY"]["code"] == orb_code
+    assert mgr.positions["SPY"].get("source") != "mr"
+    sells = [o for o in trade.orders[buys:] if o["trd_side"] == TrdSide.SELL]
+    assert sells == []
+
+
+def test_enter_option_contract_does_not_overwrite_orb_spy(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    mgr = OrderManager(_FakeTrade(), _FakeQuote(ask=1.0), trd_env="SIMULATE")
+    mgr.enter("SPY", "CALL", 500.0, 0.01, 10_000.0)
+    orb = dict(mgr.positions["SPY"])
+    mgr.enter_option_contract(
+        "SPY",
+        "CALL",
+        strike=500.0,
+        expiry="2026-10-16",
+        premium=1.0,
+        risk_pct=0.01,
+        portfolio_val=10_000.0,
+        source="mr",
+    )
+    assert mgr.positions["SPY"] == orb
+    assert mgr.positions["SPY"].get("source") != "mr"
+
+
+def test_allow_orb_symbols_still_refuses_occupied_spy(monkeypatch):
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setenv(MR_ALLOW_ORB_SYMBOLS_ENV, "1")
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, trade, _cb = _executor(enabled=True, ask=1.0)
+    mgr.enter("SPY", "CALL", 500.0, 0.01, 10_000.0)
+    before = dict(mgr.positions["SPY"])
+    n_orders = len(trade.orders)
+    out = ex.consider(parse_payload(_spy_buy_payload()), portfolio_val=10_000)
+    assert out["placed"] is False
+    assert out["skip"] == SKIP_UNDERLYING_OCCUPIED
+    assert mgr.positions["SPY"] == before
+    assert mgr.positions["SPY"].get("source") != "mr"
+    assert len(trade.orders) == n_orders
+
+
+def test_mr_entry_refuses_when_underlying_already_tracked(monkeypatch):
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, trade, _cb = _executor(enabled=True, ask=0.79)
+    mgr.positions["NOK"] = {
+        "direction": "CALL",
+        "code": "US.NOK261016C00010000",
+        "original_qty": 2,
+        "remaining_qty": 2,
+        "entry_option_price": 0.50,
+        "trim_level": 0,
+        "realized_trim_pnl": 0.0,
+    }
+    before = dict(mgr.positions["NOK"])
+    n_orders = len(trade.orders)
+    out = ex.consider(_parse_shelf("buy_nok_calls.json"), portfolio_val=10_000)
+    assert out["placed"] is False
+    assert out["skip"] == SKIP_UNDERLYING_OCCUPIED
+    assert mgr.positions["NOK"] == before
+    assert mgr.positions["NOK"].get("source") != "mr"
+    assert len(trade.orders) == n_orders
+
+
+def test_mr_entry_denied_on_orb_symbols_by_default(monkeypatch):
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.delenv(MR_ALLOW_ORB_SYMBOLS_ENV, raising=False)
+    ex, mgr, trade, _cb = _executor(enabled=True)
+    for ticker in ("SPY", "QQQ", "NVDA"):
+        intent = parse_payload(
+            {
+                "id": f"buy_{ticker.lower()}_calls",
+                "channel": "email",
+                "subject": f"RRP - Buy {ticker} Calls",
+                "date": "2026-09-16T15:00:00Z",
+                "body": f"Buy the October 16th {ticker} $100 Call for $1.00.\n",
+            }
+        )
+        assert intent.accepted is True
+        out = ex.consider(intent, portfolio_val=10_000)
+        assert out["placed"] is False, ticker
+        assert out["skip"] == SKIP_ORB_SYMBOL, ticker
+        assert mgr.has_position(ticker) is False
+    assert trade.orders == []
+
+
+def test_mr_allow_orb_symbols_override_can_enter_spy_if_free(monkeypatch):
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setenv(MR_ALLOW_ORB_SYMBOLS_ENV, "1")
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, trade, _cb = _executor(enabled=True, ask=1.0)
+    out = ex.consider(parse_payload(_spy_buy_payload()), portfolio_val=10_000)
+    assert out["placed"] is True
+    assert mgr.has_position("SPY")
+    assert mgr.positions["SPY"].get("source") == SOURCE_MR
+    assert trade.orders
+
+
+def test_lock_in_spy_allowed_only_when_source_is_mr(monkeypatch):
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setenv(MR_ALLOW_ORB_SYMBOLS_ENV, "1")
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, trade, _cb = _executor(enabled=True, ask=1.0)
+    assert ex.consider(parse_payload(_spy_buy_payload()), portfolio_val=10_000)["placed"]
+    buys = len(trade.orders)
+    out = ex.consider(parse_payload(_spy_lock_payload()), portfolio_val=10_000)
+    assert out["status"] == "exited"
+    assert mgr.has_position("SPY") is False
+    sells = [o for o in trade.orders[buys:] if o["trd_side"] == TrdSide.SELL]
+    assert len(sells) == 1
+    assert sells[0]["order_type"] == OrderType.MARKET
+
+
+def test_eod_leftover_skips_unmarked_orb_legs(monkeypatch):
+    from fabio_live.bot import ORBBot
+
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, trade, cb = _executor(enabled=True, ask=0.79)
+    mgr.enter("SPY", "CALL", 500.0, 0.01, 10_000.0)
+    ex.consider(_parse_shelf("buy_nok_calls.json"), portfolio_val=10_000)
+    assert mgr.has_position("SPY") and mgr.has_position("NOK")
+    bot = ORBBot.__new__(ORBBot)
+    bot.signals = {}
+    bot.order_mgr = mgr
+    bot.cb = cb
+    bot._mr_executor = ex
+    bot.ops = SimpleNamespace(alert=lambda *_: None, log_alert=lambda *_: None)
+    bot.trade_ctx = SimpleNamespace(
+        position_list_query=lambda **kwargs: (0, pd.DataFrame())
+    )
+    bot.eod_close_all()
+    assert mgr.has_position("SPY") is True
+    assert mgr.positions["SPY"].get("source") != "mr"
+    assert mgr.has_position("NOK") is False
+
+
+def test_durable_cursor_prevents_re_drain_after_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    queue = tmp_path / "mr.jsonl"
+    queue.write_text("", encoding="utf-8")
+    store = IdempotencyStore()
+    cursor = DurableMrCursor(str(queue), store=store)
+    assert cursor.load_or_create() is True
+    assert cursor.path.is_file()
+    payload = _shelf("buy_nok_calls.json")
+    queue.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    ex, mgr, trade, _cb = _executor(enabled=True, ask=0.79)
+    rows = cursor.next_rows()
+    assert rows and rows[0][0] is not None
+    intent = parse_payload(rows[0][0], store=store)
+    out = ex.consider(intent, portfolio_val=10_000)
+    assert out["placed"] is True
+    assert cursor.commit_offset(rows[0][1]) is True
+    n_orders = len(trade.orders)
+
+    store2 = IdempotencyStore()
+    cursor2 = DurableMrCursor(str(queue), store=store2)
+    assert cursor2.load_or_create() is True
+    assert cursor2.offset == cursor.offset
+    assert "mr:buy_nok_calls" in store2._seen
+    rows2 = cursor2.next_rows()
+    assert rows2 == []
+    assert len(trade.orders) == n_orders
+    assert mgr.open_count() == 1
+
+
+def test_retained_jsonl_without_cursor_is_refused(tmp_path):
+    queue = tmp_path / "retained.jsonl"
+    queue.write_text(json.dumps(_shelf("buy_nok_calls.json")) + "\n", encoding="utf-8")
+    cursor = DurableMrCursor(str(queue))
+    assert cursor.load_or_create() is False
+    assert cursor.refused is True
+    assert cursor.next_rows() is None
+    assert not cursor.path.is_file()
+
+
+def test_bot_restart_jsonl_drain_does_not_duplicate(tmp_path, monkeypatch):
+    from fabio_live.bot import ORBBot
+
+    queue = tmp_path / "mr.jsonl"
+    queue.write_text("", encoding="utf-8")
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setenv("FABIO_MR_QUEUE_PATH", str(queue))
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "fabio_live.bot.get_portfolio_value", lambda *_a, **_k: 10_000.0
+    )
+
+    def _bot(mgr, cb):
+        bot = ORBBot.__new__(ORBBot)
+        bot.order_mgr = mgr
+        bot.cb = cb
+        bot.ops = SimpleNamespace(
+            log_decision=lambda *a, **k: None, alert=lambda *a: None
+        )
+        bot.trade_ctx = SimpleNamespace()
+        bot._mr_queue = []
+        bot._init_mr_paper_executor()
+        return bot
+
+    ex1, mgr1, trade1, cb1 = _executor(enabled=True, ask=0.79)
+    bot1 = _bot(mgr1, cb1)
+    queue.write_text(json.dumps(_shelf("buy_nok_calls.json")) + "\n", encoding="utf-8")
+    bot1._drain_mr_paper(allow_entries=True)
+    assert mgr1.has_position("NOK")
+    assert trade1.orders
+    n = len(trade1.orders)
+
+    ex2, mgr2, trade2, cb2 = _executor(enabled=True, ask=0.79)
+    bot2 = _bot(mgr2, cb2)
+    bot2._drain_mr_paper(allow_entries=True)
+    assert trade2.orders == []
+    assert mgr2.open_count() == 0
+    assert len(trade1.orders) == n
