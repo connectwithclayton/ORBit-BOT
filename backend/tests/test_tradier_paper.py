@@ -24,7 +24,10 @@ from paper_pin import (
     TRADIER_PAPER_BASE_URL,
     enforce_tradier_paper_pin,
     is_tradier_live_env,
+    normalize_tradier_hostname,
     resolve_tradier_env_name,
+    tradier_host_is_live,
+    tradier_host_is_sandbox,
 )
 from tradier_eod_flatten import build_arg_parser, default_tradier_env_choice, main
 
@@ -32,9 +35,10 @@ BACKEND = Path(__file__).resolve().parents[1]
 
 
 class FakeResp:
-    def __init__(self, status: int, payload):
+    def __init__(self, status: int, payload, headers: dict | None = None):
         self.status_code = status
         self._payload = payload
+        self.headers = dict(headers or {})
         self.text = json.dumps(payload) if not isinstance(payload, str) else payload
 
     def json(self):
@@ -48,7 +52,17 @@ class FakeSession:
         self.responses = list(responses or [])
         self.calls: list[dict] = []
 
-    def request(self, method, url, headers=None, data=None, params=None, timeout=None, **kwargs):
+    def request(
+        self,
+        method,
+        url,
+        headers=None,
+        data=None,
+        params=None,
+        timeout=None,
+        allow_redirects=None,
+        **kwargs,
+    ):
         self.calls.append(
             {
                 "method": method,
@@ -57,6 +71,7 @@ class FakeSession:
                 "data": dict(data) if isinstance(data, dict) else data,
                 "params": params,
                 "timeout": timeout,
+                "allow_redirects": allow_redirects,
             }
         )
         if not self.responses:
@@ -151,6 +166,79 @@ def test_enforce_tradier_live_with_allow_flag(monkeypatch):
     enforce_tradier_paper_pin("paper", base_url=TRADIER_LIVE_BASE_URL)
 
 
+def test_normalize_tradier_hostname_strips_userinfo_port_trailing_dot():
+    assert normalize_tradier_hostname("https://x@api.tradier.com") == "api.tradier.com"
+    assert normalize_tradier_hostname("https://user:pass@api.tradier.com/v1") == "api.tradier.com"
+    assert normalize_tradier_hostname("https://api.tradier.com.") == "api.tradier.com"
+    assert normalize_tradier_hostname("https://api.tradier.com./v1") == "api.tradier.com"
+    assert normalize_tradier_hostname("https://api.tradier.com:443") == "api.tradier.com"
+    assert normalize_tradier_hostname("https://x@api.tradier.com.") == "api.tradier.com"
+    assert (
+        normalize_tradier_hostname("https://user@sandbox.tradier.com.")
+        == "sandbox.tradier.com"
+    )
+    assert tradier_host_is_live("https://x@api.tradier.com") is True
+    assert tradier_host_is_live("https://api.tradier.com.") is True
+    assert tradier_host_is_sandbox("https://x@sandbox.tradier.com.") is True
+    assert tradier_host_is_sandbox("https://x@api.tradier.com") is False
+
+
+def test_obfuscated_live_hosts_refused_without_allow(monkeypatch):
+    monkeypatch.delenv(ALLOW_REAL_ENV, raising=False)
+    live_urls = (
+        "https://x@api.tradier.com",
+        "https://user:pass@api.tradier.com",
+        "https://api.tradier.com.",
+        "https://api.tradier.com./v1",
+        "https://API.TRADIER.COM",
+        "https://api.tradier.com:443",
+        "https://x@api.tradier.com.",
+        "http://api.tradier.com",
+    )
+    for url in live_urls:
+        assert is_tradier_live_env(base_url=url) is True, url
+        with pytest.raises(LiveFundsRefused):
+            enforce_tradier_paper_pin("paper", base_url=url)
+        with pytest.raises(LiveFundsRefused):
+            _client(FakeSession(), env="paper", base_url=url)
+
+
+def test_sandbox_userinfo_and_trailing_dot_still_allowed(monkeypatch):
+    monkeypatch.delenv(ALLOW_REAL_ENV, raising=False)
+    enforce_tradier_paper_pin("paper", base_url="https://x@sandbox.tradier.com")
+    enforce_tradier_paper_pin("paper", base_url="https://sandbox.tradier.com.")
+    client = _client(FakeSession(), env="paper", base_url="https://x@sandbox.tradier.com.")
+    assert tradier_host_is_sandbox(client.base_url) is True
+
+
+def test_non_sandbox_host_refused_without_allow(monkeypatch):
+    monkeypatch.delenv(ALLOW_REAL_ENV, raising=False)
+    with pytest.raises(LiveFundsRefused):
+        enforce_tradier_paper_pin("paper", base_url="https://evil.example.invalid")
+    with pytest.raises(LiveFundsRefused):
+        _client(FakeSession(), env="paper", base_url="https://evil.example.invalid")
+
+
+def test_request_refuses_redirect_to_live_and_disables_follow(monkeypatch):
+    monkeypatch.delenv(ALLOW_REAL_ENV, raising=False)
+    session = FakeSession(
+        [
+            FakeResp(
+                302,
+                {},
+                headers={
+                    "Location": "https://api.tradier.com/v1/accounts/VA0001/orders"
+                },
+            )
+        ]
+    )
+    client = _client(session)
+    with pytest.raises(LiveFundsRefused):
+        client.place_order(symbol="SPY", side="buy", quantity=1)
+    assert session.calls[0]["allow_redirects"] is False
+    assert session.calls[0]["url"].startswith(TRADIER_PAPER_BASE_URL)
+
+
 def test_client_constructor_refuses_live_url(monkeypatch):
     monkeypatch.delenv(ALLOW_REAL_ENV, raising=False)
     session = FakeSession()
@@ -200,6 +288,7 @@ def test_client_defaults_sandbox_and_place_order_mocked(monkeypatch):
     assert call["data"]["side"] == "buy_to_open"
     assert call["data"]["type"] == "market"
     assert call["timeout"] == 30.0
+    assert call["allow_redirects"] is False
 
 
 def test_place_order_refuses_exercise_side():

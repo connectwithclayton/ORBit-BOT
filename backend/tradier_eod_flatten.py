@@ -136,7 +136,7 @@ def main(argv: list[str] | None = None, *, client=None) -> int:
     args = parser.parse_args(argv)
     _LOG_CFG["format"] = args.log_format
 
-    enforce_tradier_paper_pin(args.env)
+    enforce_tradier_paper_pin(args.env)  # fail-fast; client constructor pins again
 
     if client is None:
         from brokers.tradier.client import TradierPaperClient

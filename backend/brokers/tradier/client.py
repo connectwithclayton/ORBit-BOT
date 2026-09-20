@@ -12,11 +12,12 @@ from __future__ import annotations
 import os
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin
 
 import requests
 
 from paper_pin import (
+    LiveFundsRefused,
     TRADIER_LIVE_BASE_URL,
     TRADIER_PAPER_BASE_URL,
     enforce_tradier_paper_pin,
@@ -154,6 +155,22 @@ class TradierPaperClient:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         return headers
 
+    @staticmethod
+    def _redirect_location(resp: Any, request_url: str) -> str | None:
+        headers = getattr(resp, "headers", None) or {}
+        raw = None
+        getter = getattr(headers, "get", None)
+        if callable(getter):
+            raw = getter("Location") or getter("location")
+        if not raw and isinstance(headers, dict):
+            for key, value in headers.items():
+                if str(key).lower() == "location":
+                    raw = value
+                    break
+        if not raw:
+            return None
+        return urljoin(request_url, str(raw))
+
     def _request(
         self,
         method: str,
@@ -163,9 +180,7 @@ class TradierPaperClient:
         params: dict | None = None,
     ) -> dict:
         url = f"{self.base_url}{path}"
-        host = (urlparse(url).netloc or "").lower()
-        if host in ("api.tradier.com", "api.tradier.com:443"):
-            enforce_tradier_paper_pin("live", base_url=url)
+        enforce_tradier_paper_pin(self.env, base_url=url)
         try:
             resp = self._session.request(
                 method.upper(),
@@ -174,10 +189,20 @@ class TradierPaperClient:
                 data=data,
                 params=params,
                 timeout=self.timeout_sec,
+                allow_redirects=False,
             )
+        except LiveFundsRefused:
+            raise
         except Exception as exc:
             raise TradierAPIError(f"{method.upper()} {path} failed: {type(exc).__name__}") from exc
         status = int(getattr(resp, "status_code", 0) or 0)
+        if 300 <= status < 400:
+            location = self._redirect_location(resp, url)
+            if location:
+                enforce_tradier_paper_pin(self.env, base_url=location)
+            raise TradierAPIError(
+                f"{method.upper()} {path} HTTP {status}: redirects disabled"
+            )
         try:
             payload = resp.json() if hasattr(resp, "json") else {}
         except Exception:

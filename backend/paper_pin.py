@@ -41,7 +41,8 @@ _TRADIER_LIVE_REFUSED_MSG = (
 
 _TRADIER_PAPER_TOKENS = frozenset({"", "paper", "sandbox", "simulate", "sim"})
 _TRADIER_LIVE_TOKENS = frozenset({"live", "real", "production", "prod"})
-_TRADIER_LIVE_HOSTS = frozenset({"api.tradier.com", "api.tradier.com:443"})
+_TRADIER_SANDBOX_HOST = "sandbox.tradier.com"
+_TRADIER_LIVE_HOST = "api.tradier.com"
 
 
 class LiveFundsRefused(SystemExit):
@@ -106,15 +107,33 @@ def resolve_tradier_env_name(raw: str | None = None) -> str:
     return "paper"
 
 
+def normalize_tradier_hostname(base_url: str | None) -> str:
+    """Hostname only: no userinfo, no trailing dot, no default-port suffix.
+
+    ``urlparse().netloc`` is not used — it keeps ``user@host`` and ``host.``
+    which would bypass a raw-string denylist.
+    """
+    if not base_url:
+        return ""
+    raw = base_url.strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    host = urlparse(raw).hostname
+    if not host:
+        return ""
+    return host.lower().rstrip(".")
+
+
+def tradier_host_is_sandbox(base_url: str | None) -> bool:
+    """True when *base_url* is the Tradier sandbox host (paper allowlist)."""
+    return normalize_tradier_hostname(base_url) == _TRADIER_SANDBOX_HOST
+
+
 def tradier_host_is_live(base_url: str | None) -> bool:
     """True when *base_url* points at Tradier production (api.tradier.com)."""
-    if not base_url:
-        return False
-    host = (urlparse(base_url.strip()).netloc or "").lower()
-    if not host:
-        # allow passing a bare host
-        host = base_url.strip().lower().split("/")[0]
-    return host in _TRADIER_LIVE_HOSTS
+    return normalize_tradier_hostname(base_url) == _TRADIER_LIVE_HOST
 
 
 def is_tradier_live_env(*, env: str | None = None, base_url: str | None = None) -> bool:
@@ -125,9 +144,14 @@ def is_tradier_live_env(*, env: str | None = None, base_url: str | None = None) 
 
 
 def enforce_tradier_paper_pin(env=None, *, base_url: str | None = None) -> None:
-    """Refuse Tradier live unless FABIO_ALLOW_REAL_TRADING=1. Paper always allowed."""
-    if not is_tradier_live_env(env=env, base_url=base_url):
-        return
+    """Refuse Tradier live / non-sandbox hosts unless FABIO_ALLOW_REAL_TRADING=1.
+
+    When the allow flag is unset, a provided URL must be sandbox.tradier.com
+    (normalized). Paper env with no URL is allowed (client defaults sandbox).
+    """
     if allow_real_trading_enabled():
         return
-    raise LiveFundsRefused(_TRADIER_LIVE_REFUSED_MSG)
+    if is_tradier_live_env(env=env, base_url=base_url):
+        raise LiveFundsRefused(_TRADIER_LIVE_REFUSED_MSG)
+    if base_url and not tradier_host_is_sandbox(base_url):
+        raise LiveFundsRefused(_TRADIER_LIVE_REFUSED_MSG)
