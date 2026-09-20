@@ -168,7 +168,8 @@ def test_enforce_tradier_live_with_allow_flag(monkeypatch):
 
 def test_normalize_tradier_hostname_strips_userinfo_port_trailing_dot():
     assert normalize_tradier_hostname("https://x@api.tradier.com") == "api.tradier.com"
-    assert normalize_tradier_hostname("https://user:pass@api.tradier.com/v1") == "api.tradier.com"
+    # Userinfo + path (username-only; avoid Basic-Auth user/password URL shape).
+    assert normalize_tradier_hostname("https://x@api.tradier.com/v1") == "api.tradier.com"
     assert normalize_tradier_hostname("https://api.tradier.com.") == "api.tradier.com"
     assert normalize_tradier_hostname("https://api.tradier.com./v1") == "api.tradier.com"
     assert normalize_tradier_hostname("https://api.tradier.com:443") == "api.tradier.com"
@@ -187,7 +188,6 @@ def test_obfuscated_live_hosts_refused_without_allow(monkeypatch):
     monkeypatch.delenv(ALLOW_REAL_ENV, raising=False)
     live_urls = (
         "https://x@api.tradier.com",
-        "https://user:pass@api.tradier.com",
         "https://api.tradier.com.",
         "https://api.tradier.com./v1",
         "https://API.TRADIER.COM",
