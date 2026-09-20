@@ -1,0 +1,7 @@
+{
+  "channel": "email",
+  "message_id": "<mr-fx-005@alerts.example.invalid>",
+  "received_at": "2026-09-18T12:00:00-04:00",
+  "subject": "Weekly recap",
+  "body_text": "Market color only. No ticker. No direction. Anonymized fixture."
+}

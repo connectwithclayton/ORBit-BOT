@@ -1,0 +1,7 @@
+{
+  "channel": "email",
+  "message_id": "<mr-fx-007@alerts.example.invalid>",
+  "received_at": "2026-09-18T13:10:00-04:00",
+  "subject": "We're buying $AMD calls",
+  "body_text": "Looking at $AMD. Buy calls. Confidence: medium.\nAnonymized fixture. No live mailbox."
+}

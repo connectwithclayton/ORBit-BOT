@@ -1,0 +1,9 @@
+{
+  "channel": "site",
+  "alert_id": "mr-fx-003",
+  "published_at": "2026-09-18T11:05:00-04:00",
+  "ticker": "AAPL",
+  "action": "buy",
+  "instrument": "equity",
+  "confidence": "high"
+}

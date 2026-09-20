@@ -1,0 +1,7 @@
+{
+  "channel": "email",
+  "message_id": "<mr-fx-002@alerts.example.invalid>",
+  "received_at": "2026-09-18T10:22:00-04:00",
+  "subject": "Alert: QQQ — looking at puts",
+  "body_text": "Ticker: QQQ\nDirection: PUT\nConfidence: 75%\nStructure: single-leg\nAnonymized fixture. No live mailbox."
+}
