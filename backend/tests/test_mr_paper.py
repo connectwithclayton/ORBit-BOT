@@ -720,6 +720,102 @@ def test_retained_jsonl_without_cursor_is_refused(tmp_path):
     assert not cursor.path.is_file()
 
 
+def _write_cursor(queue: Path, offset, *, seen=None, contracts=None) -> Path:
+    path = Path(str(queue) + ".cursor.json")
+    path.write_text(
+        json.dumps(
+            {
+                "offset": offset,
+                "seen": list(seen or []),
+                "contracts": list(contracts or []),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_stale_high_cursor_offset_refuses_truncated_queue(tmp_path):
+    queue = tmp_path / "mr.jsonl"
+    bulky = (json.dumps(_shelf("buy_nok_calls.json")) + "\n") * 4
+    queue.write_text(bulky, encoding="utf-8")
+    high = queue.stat().st_size
+    _write_cursor(queue, high, seen=["mr:buy_nok_calls"])
+    queue.write_text(json.dumps(_shelf("buy_ibm_calls.json")) + "\n", encoding="utf-8")
+    assert queue.stat().st_size < high
+
+    store = IdempotencyStore()
+    cursor = DurableMrCursor(str(queue), store=store)
+    assert cursor.load_or_create() is False
+    assert cursor.refused is True
+    assert "beyond queue size" in cursor.refuse_reason
+    assert cursor.next_rows() is None
+    assert store._seen == set()
+
+
+def test_next_rows_refuses_stale_high_offset_without_rewind(tmp_path):
+    queue = tmp_path / "mr.jsonl"
+    queue.write_text("", encoding="utf-8")
+    cursor = DurableMrCursor(str(queue))
+    assert cursor.load_or_create() is True
+    line = json.dumps(_shelf("buy_nok_calls.json")) + "\n"
+    queue.write_text(line * 2, encoding="utf-8")
+    rows = cursor.next_rows()
+    assert rows and len(rows) == 2
+    assert cursor.commit_offset(rows[-1][1]) is True
+    queue.write_text(json.dumps(_shelf("buy_ibm_calls.json")) + "\n", encoding="utf-8")
+    assert cursor.offset > queue.stat().st_size
+    assert cursor.next_rows() is None
+    assert cursor.refused is True
+    assert "beyond queue size" in cursor.refuse_reason
+
+
+def test_corrupt_cursor_offset_is_refused(tmp_path):
+    queue = tmp_path / "mr.jsonl"
+    queue.write_text(json.dumps(_shelf("buy_nok_calls.json")) + "\n", encoding="utf-8")
+    for bad in ("not-an-int", [1], {"n": 0}, None):
+        _write_cursor(queue, bad)
+        cursor = DurableMrCursor(str(queue))
+        assert cursor.load_or_create() is False, bad
+        assert cursor.refused is True, bad
+        assert "corrupt" in cursor.refuse_reason, bad
+        assert cursor.next_rows() is None
+        assert cursor.save() is False
+
+
+def test_negative_cursor_offset_is_refused(tmp_path):
+    queue = tmp_path / "mr.jsonl"
+    queue.write_text(json.dumps(_shelf("buy_nok_calls.json")) + "\n", encoding="utf-8")
+    _write_cursor(queue, -5)
+    cursor = DurableMrCursor(str(queue))
+    assert cursor.load_or_create() is False
+    assert cursor.refused is True
+    assert "negative" in cursor.refuse_reason
+    assert cursor.next_rows() is None
+
+
+def test_bot_drain_refuses_truncated_queue_with_stale_cursor(tmp_path, monkeypatch):
+    queue = tmp_path / "mr.jsonl"
+    bulky = (json.dumps(_shelf("buy_nok_calls.json")) + "\n") * 4
+    queue.write_text(bulky, encoding="utf-8")
+    _write_cursor(queue, queue.stat().st_size, seen=["mr:buy_nok_calls"])
+    queue.write_text(json.dumps(_shelf("buy_ibm_calls.json")) + "\n", encoding="utf-8")
+    monkeypatch.setenv(MR_PAPER_ENABLED_ENV, "1")
+    monkeypatch.setenv("FABIO_MR_QUEUE_PATH", str(queue))
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(
+        "fabio_live.bot.get_portfolio_value", lambda *_a, **_k: 10_000.0
+    )
+    ex, mgr, trade, cb = _executor(enabled=True, ask=6.38)
+    bot = _drain_bot(mgr, cb, paused=False)
+    bot._drain_mr_paper(allow_entries=True)
+    assert bot._mr_cursor.refused is True
+    assert "beyond queue size" in bot._mr_cursor.refuse_reason
+    assert trade.orders == []
+    assert mgr.open_count() == 0
+
+
 def test_bot_restart_jsonl_drain_does_not_duplicate(tmp_path, monkeypatch):
     from fabio_live.bot import ORBBot
 

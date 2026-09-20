@@ -1091,6 +1091,7 @@ class ORBBot:
         self._hydrate_circuit_from_sheets_today()
         mr_ex = getattr(self, "_mr_executor", None)
         if mr_ex is not None and mr_ex.cb is not self.cb:
+            # Partitioned MR CB is not hydrated from Sheets across restart.
             mr_ex.cb.set_portfolio_open(portfolio_val)
 
         for sym in SYMBOLS:

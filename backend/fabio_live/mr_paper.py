@@ -140,6 +140,8 @@ class DurableMrCursor:
 
     Restarts load this file so retained JSONL is not re-drained. If the queue
     file has content and no cursor can be loaded or saved, file drain is refused.
+    Stale high offsets (truncate/rewrite) and corrupt/negative offsets refuse
+    rather than rewind to byte 0.
     """
 
     def __init__(self, queue_path: str, *, store: IdempotencyStore | None = None) -> None:
@@ -170,12 +172,24 @@ class DurableMrCursor:
                 self.refused = True
                 self.refuse_reason = "cursor is not a JSON object"
                 return False
+            raw_off = data.get("offset")
             try:
-                self.offset = int(data.get("offset") or 0)
+                offset = int(raw_off)
             except (TypeError, ValueError):
-                self.offset = 0
-            if self.offset < 0:
-                self.offset = 0
+                self.refused = True
+                self.refuse_reason = f"cursor offset corrupt: {raw_off!r}"
+                return False
+            if offset < 0:
+                self.refused = True
+                self.refuse_reason = f"cursor offset negative: {offset}"
+                return False
+            if offset > queue_bytes:
+                self.refused = True
+                self.refuse_reason = (
+                    f"cursor offset {offset} beyond queue size {queue_bytes}"
+                )
+                return False
+            self.offset = offset
             self.store.load_durable_dict(data)
             return True
         if queue_bytes > 0:
@@ -230,8 +244,17 @@ class DurableMrCursor:
             self.refuse_reason = f"queue read failed: {exc}"
             return None
         start = self.offset
+        if start < 0:
+            self.refused = True
+            self.refuse_reason = f"cursor offset negative: {start}"
+            return None
         if start > len(raw):
-            start = 0
+            # Truncate/rewrite/rotate left a stale high cursor — do not rewind.
+            self.refused = True
+            self.refuse_reason = (
+                f"cursor offset {start} beyond queue size {len(raw)}"
+            )
+            return None
         out: list[tuple[dict[str, Any] | None, int]] = []
         pos = start
         for line in raw[start:].splitlines(keepends=True):
