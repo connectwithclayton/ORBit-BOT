@@ -890,3 +890,131 @@ def test_eod_tradier_books_empty_om_does_not_wipe_ledgers(tmp_path, monkeypatch)
     only_mr, _ = flatten_symbol_filters(BOOK_MR_TRADIER, "tradier", tables)
     assert mr_occ in only_mr
     assert occ not in only_mr
+
+
+def test_flatten_tracked_retains_tradier_ledger_orphan_after_new_fill(tmp_path):
+    """Captain A: persist A, empty OM, enter B, flatten — A stays on disk."""
+    code_a = "SPY261016C00500000"
+    persisted = PaperBookLedger(BOOK_ORB_TRADIER, directory=tmp_path)
+    persisted.add(code_a)
+    assert persisted.save() is True
+
+    session = FakeSession(
+        [
+            FakeResp(200, {"order": {"id": "1", "status": "ok"}}),
+            FakeResp(200, {"order": {"id": "2", "status": "ok"}}),
+        ]
+    )
+    mgr = TradierOrderManager(
+        _client(session), source="tradier_paper", book_id=BOOK_ORB_TRADIER
+    )
+    rt = PaperBookRegistry().bind(
+        BOOK_ORB_TRADIER, order_mgr=mgr, ledger_dir=tmp_path
+    )
+    assert mgr.positions == {}
+    assert code_a in rt.ledger.codes
+    assert rt.cb.portfolio_at_open == PAPER_BOOK_STARTING_BALANCE == 10_000.0
+
+    mgr.enter_option_contract(
+        "QQQ",
+        "CALL",
+        strike=400,
+        expiry="2026-10-16",
+        premium=1.0,
+        risk_pct=0.10,
+        portfolio_val=PAPER_BOOK_STARTING_BALANCE,
+    )
+    assert mgr.has_position("QQQ")
+    code_b = mgr.positions["QQQ"]["code"]
+    assert code_b != code_a
+    rt.sync_ledger_from_positions()
+    assert {code_a, code_b} <= rt.ledger.codes
+
+    rt.flatten_tracked(reason="EOD")
+    assert not mgr.has_position("QQQ")
+    assert code_a in rt.ledger.codes
+    disk = PaperBookLedger(BOOK_ORB_TRADIER, directory=tmp_path)
+    assert disk.load() is True
+    assert code_a in disk.codes
+    assert code_b not in disk.codes
+    tables = load_all_ledgers(tmp_path)
+    assert code_a in tables[BOOK_ORB_TRADIER]
+    assert code_b not in tables[BOOK_ORB_TRADIER]
+    selected = select_flatten_codes(
+        book_id=BOOK_ORB_TRADIER,
+        broker="tradier",
+        account_codes=[code_a, code_b],
+        ledgers=tables,
+    )
+    assert selected == [code_a]
+    assert session.calls[0]["data"]["side"] == "buy_to_open"
+    assert session.calls[1]["data"]["side"] == "sell_to_close"
+
+
+def test_eod_tradier_post_restart_fill_does_not_wipe_orphan(tmp_path, monkeypatch):
+    import pandas as pd
+    from fabio_live.bot import ORBBot
+
+    monkeypatch.setenv("FABIO_TRADIER_PAPER_BOOKS", "1")
+    code_a = "SPY261016C00500000"
+    led = PaperBookLedger(BOOK_ORB_TRADIER, directory=tmp_path)
+    led.add(code_a)
+    assert led.save() is True
+
+    session = FakeSession(
+        [
+            FakeResp(200, {"order": {"id": "1", "status": "ok"}}),
+            FakeResp(200, {"order": {"id": "2", "status": "ok"}}),
+        ]
+    )
+    sold: list[str] = []
+    orb_om = SimpleNamespace(
+        trd_env="SIMULATE",
+        positions={},
+        _sell=lambda code, qty, label="": sold.append(code),
+    )
+    reg = PaperBookRegistry()
+    reg.bind(BOOK_ORB_MOOMOO, order_mgr=orb_om, ledger_dir=tmp_path)
+    bound = try_bind_tradier_books(
+        reg, mr_paper=False, client=_client(session), ledger_dir=tmp_path
+    )
+    assert bound == [BOOK_ORB_TRADIER]
+    orb_t = reg.get(BOOK_ORB_TRADIER)
+    assert orb_t is not None
+    assert orb_t.order_mgr.positions == {}
+    assert code_a in orb_t.ledger.codes
+    assert orb_t.cb.portfolio_at_open == 10_000.0
+
+    orb_t.order_mgr.enter_option_contract(
+        "QQQ",
+        "CALL",
+        strike=400,
+        expiry="2026-10-16",
+        premium=1.0,
+        risk_pct=0.10,
+        portfolio_val=PAPER_BOOK_STARTING_BALANCE,
+    )
+    code_b = orb_t.order_mgr.positions["QQQ"]["code"]
+    orb_t.sync_ledger_from_positions()
+    orb_t.ledger.save()
+
+    bot = ORBBot.__new__(ORBBot)
+    bot.signals = {}
+    bot._mr_executors = []
+    bot._mr_executor = None
+    bot._paper_books = reg
+    bot.order_mgr = orb_om
+    bot.ops = SimpleNamespace(alert=lambda *_a, **_k: None, log_alert=lambda *_a, **_k: None)
+    bot.trade_ctx = SimpleNamespace(
+        position_list_query=lambda **_k: (0, pd.DataFrame())
+    )
+    bot.eod_close_all()
+
+    disk = PaperBookLedger(BOOK_ORB_TRADIER, directory=tmp_path)
+    assert disk.load() is True
+    assert code_a in disk.codes
+    assert code_b not in disk.codes
+    tables = load_all_ledgers(tmp_path)
+    only, _ = flatten_symbol_filters(BOOK_ORB_TRADIER, "tradier", tables)
+    assert code_a in only
+    assert code_b not in only
