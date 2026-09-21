@@ -15,7 +15,10 @@ import telegram_bot as tg
 from dashboard_writer import (
     DashboardWriter,
     aggregate_closed_positions,
+    append_health_to_ops_feed,
+    live_status_from_health,
     moomoo_position_records_to_dashboard_opens,
+    write_bot_live_status,
 )
 from exit_reasons import (
     REASON_SOURCE_STRATEGY,
@@ -959,13 +962,23 @@ class ORBBot:
         except Exception as e:
             print(f"  [HEALTH] Snapshot write failed: {e}")
 
-    def _emit_health_snapshot(self, force: bool = False):
-        now_ts = time.time()
-        if (not force) and (
-            now_ts - self._health_snapshot_last_ts < HEALTH_SNAPSHOT_INTERVAL_SEC
-        ):
+    def _write_live_dashboard_sidecars(self, snapshot: dict, *, persist_feed: bool) -> None:
+        """Gitignored JSON next to the HTML. file:// will not poll these."""
+        try:
+            payload = live_status_from_health(
+                snapshot, pid=os.getpid(), running=not bool(self.stopped)
+            )
+            write_bot_live_status(payload)
+        except Exception as e:
+            print(f"  [HEALTH] Live status write failed: {e}")
+        if not persist_feed:
             return
-        self._refresh_position_parity()
+        try:
+            append_health_to_ops_feed(snapshot)
+        except Exception as e:
+            print(f"  [HEALTH] Ops feed write failed: {e}")
+
+    def _assemble_health_snapshot(self) -> dict:
         ops_h = self.ops.health()
         # Top-level `circuit` is a deprecated alias of the orb-moomoo book CB
         # for one release so verify_phase2_reliability.py (and existing
@@ -1037,26 +1050,38 @@ class ORBBot:
         except Exception as e:
             print(f"  [HEALTH] books map failed: {e}")
             snapshot["books"] = canonical_books_health_fallback()
-        self._write_health_snapshot(snapshot)
-        pp = snapshot["position_parity"]
-        pp_note = (
-            f" parity_ok={pp.get('parity_ok')} query_ok={pp.get('query_ok')}"
-            f" drift_count={pp.get('drift_count')}"
+        return snapshot
+
+    def _emit_health_snapshot(self, force: bool = False):
+        now_ts = time.time()
+        persist = bool(force) or (
+            now_ts - self._health_snapshot_last_ts >= HEALTH_SNAPSHOT_INTERVAL_SEC
         )
-        self.ops.log_alert(
-            "HEALTH_SNAPSHOT",
-            f"queue={snapshot['ops']['queue_depth']}/{snapshot['ops']['queue_max']} "
-            f"errors={snapshot['ops']['errors']} "
-            f"drops={snapshot['ops']['dropped_noncritical']}/{snapshot['ops']['dropped_critical']} "
-            f"dash={snapshot['ops']['dashboard_intraday_refresh_enqueued']}/"
-            f"{snapshot['ops']['dashboard_intraday_refresh_requests']} "
-            f"open={snapshot['ops']['dashboard_open_refresh_enqueued']}/"
-            f"{snapshot['ops']['dashboard_open_refresh_requests']} "
-            f"cadence={snapshot['ops']['loop_cadence_mode']}@{snapshot['ops']['loop_sleep_sec']:.0f}s"
-            f"{pp_note}",
-            "",
-        )
-        self._health_snapshot_last_ts = now_ts
+        if persist:
+            self._refresh_position_parity()
+        snapshot = self._assemble_health_snapshot()
+        if persist:
+            self._write_health_snapshot(snapshot)
+            pp = snapshot["position_parity"]
+            pp_note = (
+                f" parity_ok={pp.get('parity_ok')} query_ok={pp.get('query_ok')}"
+                f" drift_count={pp.get('drift_count')}"
+            )
+            self.ops.log_alert(
+                "HEALTH_SNAPSHOT",
+                f"queue={snapshot['ops']['queue_depth']}/{snapshot['ops']['queue_max']} "
+                f"errors={snapshot['ops']['errors']} "
+                f"drops={snapshot['ops']['dropped_noncritical']}/{snapshot['ops']['dropped_critical']} "
+                f"dash={snapshot['ops']['dashboard_intraday_refresh_enqueued']}/"
+                f"{snapshot['ops']['dashboard_intraday_refresh_requests']} "
+                f"open={snapshot['ops']['dashboard_open_refresh_enqueued']}/"
+                f"{snapshot['ops']['dashboard_open_refresh_requests']} "
+                f"cadence={snapshot['ops']['loop_cadence_mode']}@{snapshot['ops']['loop_sleep_sec']:.0f}s"
+                f"{pp_note}",
+                "",
+            )
+            self._health_snapshot_last_ts = now_ts
+        self._write_live_dashboard_sidecars(snapshot, persist_feed=persist)
 
     def _compute_loop_sleep_sec(self) -> float:
         if self.signals:

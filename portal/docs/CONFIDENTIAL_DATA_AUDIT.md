@@ -7,7 +7,7 @@ This audit lists what **must not** appear in a public repository. Patterns are e
 | Environment | `.env`, `.envrc`, `fabio.env`, `*env*copy*.txt` | API keys, Telegram tokens, sheet IDs, passwords |
 | Broker / OAuth files | `google_credentials.json`, `*credentials*.json`, `token.json` | Account access |
 | Key material | `*.pem`, `*.key`, `id_rsa`, `id_ed25519` | Signing / SSH |
-| Runtime state | `backend/trade_data.json`, `*.log`, `audit_sync*.jsonl`, `bot_health_snapshots.jsonl` | Positions, PnL, operational telemetry |
+| Runtime state | `backend/trade_data.json`, `*.log`, `audit_sync*.jsonl`, `bot_health_snapshots.jsonl`, `frontend/bot_live_status.json`, `frontend/bot_ops_feed.json` | Positions, PnL, operational telemetry |
 | Generated outputs | `results/`, `Fabio_backtest_*.csv`, `*.png` backtest charts, `*_dashboard.html` | Proprietary results; clutter |
 | Tooling | `__pycache__/`, `.venv/`, `.pytest_cache/` | Noise |
 

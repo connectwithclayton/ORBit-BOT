@@ -1,65 +1,29 @@
 #!/bin/bash
-# push_dashboard.sh — Sync Fabio live dashboard to GitHub Pages.
-# Runs automatically at 12:00 PM and 3:55 PM ET Mon–Fri via launchd.
-# Can also be run manually: bash portal/push_dashboard.sh (from Fabio_bot root).
+# push_dashboard.sh — PAUSED (SHIP-009).
 #
-# Defaults publish into THIS repo (ORBit-BOT / Fabio root) so Pages at
-#   https://connectwithclayton-cpu.github.io/ORBit-BOT/
-# picks up frontend/live_dashboard.html. Override REPO_DIR to push elsewhere
-# (legacy: ~/Documents/TRADING/orb-live-dashboard).
+# Do NOT auto-commit tracked frontend/live_dashboard.html until four-book
+# captain UI is quality-ready. GitHub Pages and orbit.clayj.app stay unwired.
+#
+# Local-only write path for operators (no git, no Pages):
+#   DashboardWriter renders frontend/templates/live_dashboard_template.html
+#   into frontend/live_dashboard.html and frontend/fabio_live_dashboard.html
+#   on the trading host (same process as the desk bot / reconcile).
+#   Live pill/ops poll gitignored frontend/bot_live_status.json and
+#   frontend/bot_ops_feed.json written from the health snapshot.
+#
+#   file:// will not poll those JSON files. From the repo:
+#     cd frontend && python3 -m http.server 8000
+#     open http://127.0.0.1:8000/live_dashboard.html
+#
+# Regenerated HTML is local-only. Do not git add / commit it.
+# Historical Pages snapshot on main stays frozen until a later publish slice.
 
 FABIO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LIVE_SRC="${LIVE_SRC:-$FABIO_ROOT/frontend/live_dashboard.html}"
-BACKTEST_SRC="${BACKTEST_SRC:-$HOME/Documents/TRADING/orb_vs_fabio_dashboard.html}"
-REPO_DIR="${REPO_DIR:-$FABIO_ROOT}"
-LIVE_REL="${LIVE_REL:-frontend/live_dashboard.html}"
-BACKTEST_REL="${BACKTEST_REL:-orb_vs_fabio_dashboard.html}"
 LOG="$FABIO_ROOT/dashboard_push.log"
 
 echo "" >> "$LOG"
 echo "=== Fabio Push: $(date) ===" >> "$LOG"
-
-if [ ! -d "$REPO_DIR/.git" ]; then
-    echo "❌ Repo not found at $REPO_DIR" >> "$LOG"
-    exit 1
-fi
-
-cd "$REPO_DIR"
-
-# ── Fabio live dashboard ──────────────────────────────────────────────────────
-if [ -f "$LIVE_SRC" ]; then
-    mkdir -p "$(dirname "$REPO_DIR/$LIVE_REL")"
-    cp "$LIVE_SRC" "$REPO_DIR/$LIVE_REL"
-    git add "$LIVE_REL"
-    echo "  staged $LIVE_REL" >> "$LOG"
-else
-    echo "⚠  Fabio dashboard not found at $LIVE_SRC — skipping." >> "$LOG"
-fi
-
-# ── Backtest comparison dashboard (optional) ─────────────────────────────────
-if [ -f "$BACKTEST_SRC" ]; then
-    cp "$BACKTEST_SRC" "$REPO_DIR/$BACKTEST_REL"
-    git add "$BACKTEST_REL"
-    echo "  staged $BACKTEST_REL" >> "$LOG"
-else
-    echo "⚠  Backtest dashboard not found at $BACKTEST_SRC — skipping." >> "$LOG"
-fi
-
-if git diff --cached --quiet; then
-    echo "✓  No changes since last push — skipping." >> "$LOG"
-    exit 0
-fi
-
-if git commit -m "Fabio dashboard update: $(date '+%Y-%m-%d %H:%M ET')" >> "$LOG" 2>&1; then
-    :
-else
-    echo "❌ Commit failed — see $LOG" >> "$LOG"
-    exit 1
-fi
-
-if git push origin main >> "$LOG" 2>&1; then
-    echo "✅ Pushed successfully at $(date '+%H:%M')" >> "$LOG"
-else
-    echo "❌ Push failed — check auth / network." >> "$LOG"
-    exit 1
-fi
+echo "⏸  SHIP-009: HTML auto-commit paused. Local dashboard is written by DashboardWriter;" >> "$LOG"
+echo "   serve frontend/ with python3 -m http.server — do not git add live_dashboard.html." >> "$LOG"
+echo "⏸  Pages / orbit.clayj.app wait-to-wire until four-book UI is ready." >> "$LOG"
+exit 0
