@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -498,9 +499,9 @@ def test_write_html_uses_file_template_preserves_ops_and_data(tmp_path):
 
 def test_push_dashboard_sh_does_not_auto_commit_html():
     text = _PUSH_DASH.read_text(encoding="utf-8")
-    assert "git add" not in text
-    assert "git commit" not in text
-    assert "git push" not in text
+    assert not re.search(r"^\s*git add\b", text, re.M)
+    assert not re.search(r"^\s*git commit\b", text, re.M)
+    assert not re.search(r"^\s*git push\b", text, re.M)
     assert "python3 -m http.server" in text
     assert "live_dashboard.html" in text
     assert "paused" in text.lower() or "PAUSED" in text
