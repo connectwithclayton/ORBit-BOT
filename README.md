@@ -71,9 +71,11 @@ PYTHONPATH=backend:frontend python3 backend/print_effective_config.py
 
 ## Env and secrets
 
-Never commit `.env`, API keys, tokens, or `google_credentials.json`. There is **no** root `.env.example`. Copy [`portal/.env.example`](portal/.env.example) to a **secure path outside this tree** and set `FABIO_ENV_FILE` to that file. A gitignored repo-root `.env` is a local fallback only.
+Never commit `.env`, API keys, tokens, or `google_credentials.json`. There is **no** root `.env.example`. Copy [`portal/.env.example`](portal/.env.example) to a **secure path outside this tree** and set `FABIO_ENV_FILE` to that file. The example documents **variable names** (Moomoo, Tradier, Polygon, Telegram, Google) — do not paste real values into Git, issues, or this README.
 
-The example file documents **variable names** (Moomoo, Tradier, Polygon, Telegram, Google). Do not paste real values into Git, issues, or this README. If exposure is suspected, follow [`portal/SECURITY_RUNBOOK.md`](portal/SECURITY_RUNBOOK.md).
+python-dotenv does **not** override keys already in the environment. Flatten scripts (`moomoo_eod_failsafe.py`, `tradier_eod_flatten.py`) XOR: `FABIO_ENV_FILE` if set, else repo-root `.env`. The desk entrypoint (`orb_bot_fabio.py`) always loads repo-root `.env` first, then `config.py` loads `FABIO_ENV_FILE` (if set) without overriding — so overlapping keys in a leftover root `.env` win. When you rely on `FABIO_ENV_FILE` for the desk, remove or empty root `.env` (or export variables only via the shell).
+
+If exposure is suspected, follow [`portal/SECURITY_RUNBOOK.md`](portal/SECURITY_RUNBOOK.md).
 
 ---
 
@@ -83,7 +85,7 @@ The example file documents **variable names** (Moomoo, Tradier, Polygon, Telegra
 # Paper desk (default ORB-Moomoo; paper pin refuses REAL)
 PYTHONPATH=backend:frontend python3 backend/orb_bot_fabio.py
 
-# Research backtest (console summary + CSV/PNG in the working directory)
+# Research backtest (CSV/PNG at repo root, or results/research/<run_id>/ if those filenames already exist)
 PYTHONPATH=backend:frontend python3 backend/backtest/Fabio_orb_backtest.py
 
 # Dry-run flatten for one book (never cross-broker)
