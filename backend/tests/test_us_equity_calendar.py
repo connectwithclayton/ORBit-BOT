@@ -112,3 +112,22 @@ def test_xnys_failsafe_cutoff_holiday_and_before_window():
     )
     assert ok is True
     assert detail == "ok"
+
+
+def test_xnys_failsafe_cutoff_maps_lazy_exchange_calendars_import_error(monkeypatch):
+    """Missing exchange_calendars at _xnys_calendar() must not hard-fail require-after-et."""
+
+    def missing_xcals():
+        raise ImportError("No module named 'exchange_calendars'")
+
+    monkeypatch.setattr(
+        "fabio_live.us_equity_calendar._xnys_calendar",
+        missing_xcals,
+    )
+    tz = __import__("zoneinfo").ZoneInfo("America/New_York")
+    ok, detail = xnys_failsafe_cutoff_ok(
+        datetime.datetime(2025, 10, 1, 15, 50, 0, tzinfo=tz)
+    )
+    assert ok is False
+    assert detail.startswith("xnys_calendar_unavailable:")
+    assert "exchange_calendars" in detail

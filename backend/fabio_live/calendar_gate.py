@@ -93,18 +93,24 @@ def us_weekday_after_cutoff(
 def xnys_failsafe_cutoff_ok(
     now_et: datetime.datetime,
 ) -> tuple[bool, str]:
-    """After session_close - FAILSAFE_MINUTES on NYSE trading days; else explains abort."""
+    """After session_close - FAILSAFE_MINUTES on NYSE trading days; else explains abort.
+
+    ``exchange_calendars`` is imported lazily inside ``_xnys_calendar``. Catch
+    ImportError on that call path (not only the calendar_gate import) so
+    ``--require-after-et`` can fall back to the legacy Mon–Fri cutoff.
+    """
     now_et = _as_et(now_et)
     try:
         from datetime import timedelta
 
         from fabio_live.constants import FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES
         from fabio_live.us_equity_calendar import get_nyse_session_schedule_et
+
+        day = now_et.date()
+        sched = get_nyse_session_schedule_et(day)
     except ImportError as e:
         return False, f"xnys_calendar_unavailable:{e}"
 
-    day = now_et.date()
-    sched = get_nyse_session_schedule_et(day)
     if sched is None:
         return False, "nyse_not_a_session_day"
     mins = max(0, int(FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES))
