@@ -183,10 +183,27 @@ def test_installer_dry_run_prints_four_labels_and_book_argv():
     )
     assert proc.returncode == 0, proc.stderr
     out = proc.stdout
+    assert "SheetsLogger" not in out
+    assert "gspread" not in out
     for spec in ALL_PAPER_BOOKS:
         label = launchd_label_for_book(spec.book_id)
         assert label in out
         assert f"--book {spec.book_id}" in out
+        assert f"com.claytonorb.paper.flatten.{spec.book_id}" in out
+
+
+def test_print_schedule_bash_is_exactly_four_job_rows(capsys):
+    assert flatten_jobs_main(["print-schedule", "--bash"]) == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert len(lines) == 4
+    assert all(ln.startswith("flatten-job ") for ln in lines)
+    books = [ln.split()[1] for ln in lines]
+    assert books == [
+        BOOK_ORB_MOOMOO,
+        BOOK_MR_MOOMOO,
+        BOOK_ORB_TRADIER,
+        BOOK_MR_TRADIER,
+    ]
 
 
 def test_wrapper_requires_book_flag():

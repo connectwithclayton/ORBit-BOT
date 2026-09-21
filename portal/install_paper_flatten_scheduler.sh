@@ -51,18 +51,22 @@ print_dry_run() {
   "$PYTHON" -m fabio_live.paper_flatten_jobs print-schedule
   echo ""
   echo "launchctl labels (after install):"
-  while read -r BOOK HOUR MINUTE LABEL JSONL; do
+  while read -r _pfx BOOK HOUR MINUTE LABEL JSONL; do
     echo "  $LABEL"
     echo "    StartCalendarInterval: weekday ${HOUR}:$(printf '%02d' "$MINUTE") local"
     echo "    ProgramArguments: /bin/bash $WRAP --book $BOOK"
     echo "    inner argv: $("$PYTHON" -m fabio_live.paper_flatten_jobs print-argv --book "$BOOK" | tr '\n' ' ')"
     echo "    jsonl (gitignored): $FABIO_ROOT/$JSONL"
     echo ""
-  done < <("$PYTHON" -m fabio_live.paper_flatten_jobs print-schedule --bash)
+  done < <(flatten_job_rows)
   echo "Useful:"
   echo "  launchctl list | grep claytonorb.paper.flatten"
   echo "  Uninstall: bash portal/install_paper_flatten_scheduler.sh --uninstall"
   echo "  Manual verify: portal/docs/Paper-Book-Flatten.md"
+}
+
+flatten_job_rows() {
+  "$PYTHON" -m fabio_live.paper_flatten_jobs print-schedule --bash | grep '^flatten-job '
 }
 
 weekday_calendar_xml() {
@@ -127,20 +131,20 @@ fi
 chmod +x "$WRAP" 2>/dev/null || true
 
 if [[ "$MODE" == "uninstall" ]]; then
-  while read -r BOOK HOUR MINUTE LABEL JSONL; do
+  while read -r _pfx BOOK HOUR MINUTE LABEL JSONL; do
     plist="$HOME/Library/LaunchAgents/${LABEL}.plist"
     if command -v launchctl >/dev/null 2>&1; then
       launchctl unload "$plist" 2>/dev/null || true
     fi
     rm -f "$plist"
     echo "Removed $LABEL"
-  done < <("$PYTHON" -m fabio_live.paper_flatten_jobs print-schedule --bash)
+  done < <(flatten_job_rows)
   echo "✅ Paper flatten schedulers uninstalled."
   exit 0
 fi
 
 LOADED=0
-while read -r BOOK HOUR MINUTE LABEL JSONL; do
+while read -r _pfx BOOK HOUR MINUTE LABEL JSONL; do
   plist="$(write_plist "$BOOK" "$HOUR" "$MINUTE" "$LABEL")"
   if command -v launchctl >/dev/null 2>&1; then
     launchctl unload "$plist" 2>/dev/null || true
@@ -153,7 +157,7 @@ while read -r BOOK HOUR MINUTE LABEL JSONL; do
   else
     echo "⚠ launchctl not found; wrote $plist (load on the Mac trading host)."
   fi
-done < <("$PYTHON" -m fabio_live.paper_flatten_jobs print-schedule --bash)
+done < <(flatten_job_rows)
 
 echo "✅ Paper flatten schedulers installed (four labels, paper only)."
 echo "   Host TZ must be America/New_York."

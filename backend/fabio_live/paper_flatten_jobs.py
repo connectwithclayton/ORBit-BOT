@@ -275,7 +275,10 @@ def _main(argv: list[str]) -> int:
             return 0
         if args.bash:
             for job in jobs:
-                print(f"{job.book_id} {job.hour} {job.minute} {job.label} {job.jsonl}")
+                print(
+                    f"flatten-job {job.book_id} {job.hour} {job.minute} "
+                    f"{job.label} {job.jsonl}"
+                )
             return 0
         for job in jobs:
             inner = " ".join(job.argv)
