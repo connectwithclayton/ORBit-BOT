@@ -28,10 +28,17 @@ from typing import Any
 
 from fabio_live.paper_books import (
     BOOK_ORB_TRADIER,
+    BROKER_TRADIER,
+    REASON_ERROR,
+    REASON_FLATTEN,
+    REASON_NO_CLOSABLE,
     TRADIER_BOOK_IDS,
     default_flatten_book_id,
     flatten_symbol_filters,
+    ledger_directory,
     load_all_ledgers,
+    utc_now_iso,
+    write_failsafe_last_flatten,
 )
 from paper_pin import ALLOW_REAL_ENV, TRADIER_ENV_NAME, enforce_tradier_paper_pin
 
@@ -124,6 +131,7 @@ def _log(
     symbol: str | None = None,
     decision: str | None = None,
     reason_code: str | None = None,
+    book_id: str | None = None,
     **extra: Any,
 ) -> None:
     if _LOG_CFG.get("format") == "jsonl":
@@ -140,6 +148,8 @@ def _log(
             obj["decision"] = decision
         if reason_code is not None:
             obj["reason_code"] = reason_code
+        if book_id is not None:
+            obj["book_id"] = book_id
         if extra:
             obj["extra"] = extra
         sys.stdout.write(json.dumps(obj, default=str, ensure_ascii=False) + "\n")
@@ -154,88 +164,200 @@ def main(argv: list[str] | None = None, *, client=None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     _LOG_CFG["format"] = args.log_format
-
-    enforce_tradier_paper_pin(args.env)  # fail-fast; client constructor pins again
-
-    if client is None:
-        from brokers.tradier.client import TradierPaperClient
-
-        if args.account_id:
-            os.environ["TRADIER_ACCOUNT_ID"] = args.account_id
-        try:
-            client = TradierPaperClient.from_env(env_override=args.env)
-        except Exception as exc:
-            _log(f"ERROR: {exc}", err=True, event="client_init_failed", reason_code="init")
-            return 1
-
     book_id = getattr(args, "book", None) or BOOK_ORB_TRADIER
-    only, exclude = flatten_symbol_filters(book_id, "tradier", load_all_ledgers())
-    _log(
-        f"Tradier flatten start book={book_id} env={args.env} "
-        f"scope={args.scope} dry_run={args.dry_run}",
-        event="run_start",
-        extra={
-            "book": book_id,
-            "env": args.env,
-            "scope": args.scope,
-            "dry_run": args.dry_run,
-        },
-    )
+    started = utc_now_iso()
+    dry_run = bool(args.dry_run)
+    sidecar_dir = ledger_directory()
+    state: dict[str, Any] = {
+        "reason": REASON_ERROR,
+        "exit_code": 1,
+        "planned": 0,
+        "failures": 0,
+        "selected_codes_count": 0,
+    }
+
+    def _finish(
+        code: int,
+        *,
+        reason: str,
+        planned: int | None = None,
+        failures: int | None = None,
+        selected: int | None = None,
+    ) -> int:
+        state["reason"] = reason
+        state["exit_code"] = int(code)
+        if planned is not None:
+            state["planned"] = int(planned)
+        if failures is not None:
+            state["failures"] = int(failures)
+        if selected is not None:
+            state["selected_codes_count"] = int(selected)
+        return code
+
     try:
-        summary = client.flatten_open_positions(
-            scope=args.scope,
-            dry_run=args.dry_run,
-            sleep_fn=time.sleep,
-            sleep_between_orders=max(0.0, float(args.sleep_between_orders)),
-            only_symbols=only,
-            exclude_symbols=exclude,
-        )
-    except TypeError as exc:
-        _log(
-            f"ERROR: flatten client rejected book filters; refuse unfiltered "
-            f"account flatten: {exc}",
-            err=True,
-            event="flatten_filters_required",
-            reason_code="book_filters_required",
-        )
-        return 1
-    except Exception as exc:
-        _log(f"ERROR: flatten failed: {exc}", err=True, event="flatten_error")
-        return 1
+        enforce_tradier_paper_pin(args.env)  # fail-fast; client constructor pins again
 
-    for row in summary.get("results") or []:
+        if client is None:
+            from brokers.tradier.client import TradierPaperClient
+
+            if args.account_id:
+                os.environ["TRADIER_ACCOUNT_ID"] = args.account_id
+            try:
+                client = TradierPaperClient.from_env(env_override=args.env)
+            except Exception as exc:
+                _log(
+                    f"ERROR: {exc}",
+                    err=True,
+                    event="client_init_failed",
+                    reason_code="init",
+                    book_id=book_id,
+                    extra={"book": book_id, "book_id": book_id},
+                )
+                return _finish(1, reason=REASON_ERROR)
+
+        only, exclude = flatten_symbol_filters(
+            book_id, BROKER_TRADIER, load_all_ledgers()
+        )
         _log(
-            f"  {row.get('symbol')} qty={row.get('quantity')} side={row.get('side')} "
-            f"status={row.get('status')}",
-            event="flatten_row",
-            symbol=str(row.get("symbol") or ""),
+            f"Tradier flatten start book={book_id} env={args.env} "
+            f"scope={args.scope} dry_run={args.dry_run}",
+            event="run_start",
+            book_id=book_id,
+            extra={
+                "book": book_id,
+                "book_id": book_id,
+                "env": args.env,
+                "scope": args.scope,
+                "dry_run": args.dry_run,
+            },
+        )
+        try:
+            summary = client.flatten_open_positions(
+                scope=args.scope,
+                dry_run=args.dry_run,
+                sleep_fn=time.sleep,
+                sleep_between_orders=max(0.0, float(args.sleep_between_orders)),
+                only_symbols=only,
+                exclude_symbols=exclude,
+            )
+        except TypeError as exc:
+            _log(
+                f"ERROR: flatten client rejected book filters; refuse unfiltered "
+                f"account flatten: {exc}",
+                err=True,
+                event="flatten_filters_required",
+                reason_code="book_filters_required",
+                book_id=book_id,
+                extra={"book": book_id, "book_id": book_id},
+            )
+            return _finish(1, reason=REASON_ERROR)
+        except Exception as exc:
+            _log(
+                f"ERROR: flatten failed: {exc}",
+                err=True,
+                event="flatten_error",
+                book_id=book_id,
+                extra={"book": book_id, "book_id": book_id},
+            )
+            return _finish(1, reason=REASON_ERROR)
+
+        for row in summary.get("results") or []:
+            _log(
+                f"  {row.get('symbol')} qty={row.get('quantity')} side={row.get('side')} "
+                f"status={row.get('status')}",
+                event="flatten_row",
+                symbol=str(row.get("symbol") or ""),
+                decision="flatten",
+                reason_code=str(row.get("status") or ""),
+                book_id=book_id,
+            )
+
+        failures = int(summary.get("failures") or 0)
+        planned = int(summary.get("planned") or 0)
+        selected_n = planned
+        if planned == 0:
+            _log(
+                "No closable positions after filters.",
+                event="no_closable",
+                book_id=book_id,
+                extra={"book": book_id, "book_id": book_id},
+            )
+            if args.dry_run:
+                _log(
+                    f"Dry run: {planned} row(s) planned; no orders sent.",
+                    event="dry_run",
+                    decision="noop",
+                    book_id=book_id,
+                    extra={"book": book_id, "book_id": book_id},
+                )
+            return _finish(
+                0,
+                reason=REASON_NO_CLOSABLE,
+                planned=0,
+                failures=0,
+                selected=0,
+            )
+        if args.dry_run:
+            _log(
+                f"Dry run: {planned} row(s) planned; no orders sent.",
+                event="dry_run",
+                decision="noop",
+                book_id=book_id,
+                extra={"book": book_id, "book_id": book_id},
+            )
+            return _finish(
+                0,
+                reason=REASON_FLATTEN,
+                planned=planned,
+                failures=0,
+                selected=selected_n,
+            )
+        if failures:
+            _log(
+                f"Exiting with code 3: {failures} place_order failure(s)",
+                err=True,
+                event="run_partial_failure",
+                reason_code="place_order_failed",
+                book_id=book_id,
+                extra={"place_order_failures": failures, "book": book_id, "book_id": book_id},
+            )
+            return _finish(
+                3,
+                reason=REASON_FLATTEN,
+                planned=planned,
+                failures=failures,
+                selected=selected_n,
+            )
+        _log(
+            "Done.",
+            event="run_complete",
             decision="flatten",
-            reason_code=str(row.get("status") or ""),
+            book_id=book_id,
+            extra={"book": book_id, "book_id": book_id},
         )
-
-    failures = int(summary.get("failures") or 0)
-    planned = int(summary.get("planned") or 0)
-    if args.dry_run:
-        _log(
-            f"Dry run: {planned} row(s) planned; no orders sent.",
-            event="dry_run",
-            decision="noop",
+        return _finish(
+            0,
+            reason=REASON_FLATTEN,
+            planned=planned,
+            failures=0,
+            selected=selected_n,
         )
-        return 0
-    if planned == 0:
-        _log("No closable positions after filters.", event="no_closable")
-        return 0
-    if failures:
-        _log(
-            f"Exiting with code 3: {failures} place_order failure(s)",
-            err=True,
-            event="run_partial_failure",
-            reason_code="place_order_failed",
-            extra={"place_order_failures": failures},
+    except Exception:
+        _finish(1, reason=REASON_ERROR)
+        raise
+    finally:
+        write_failsafe_last_flatten(
+            book_id=book_id,
+            started_at_utc=started,
+            finished_at_utc=utc_now_iso(),
+            dry_run=dry_run,
+            exit_code=int(state["exit_code"]),
+            planned=int(state["planned"]),
+            failures=int(state["failures"]),
+            selected_codes_count=int(state["selected_codes_count"]),
+            reason=str(state["reason"]),
+            directory=sidecar_dir,
         )
-        return 3
-    _log("Done.", event="run_complete", decision="flatten")
-    return 0
 
 
 if __name__ == "__main__":

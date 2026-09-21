@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -47,6 +48,27 @@ FIFO_NOTES_MR_TRADIER = "mr_tradier_paper_fifo"
 
 FLATTEN_MOOMOO = "moomoo_eod_failsafe.py"
 FLATTEN_TRADIER = "tradier_eod_flatten.py"
+PRIMARY_FLATTEN_SCRIPT = "eod_close_all"
+
+LAYER_FAILSAFE = "failsafe"
+LAYER_PRIMARY_BOT = "primary_bot"
+LAST_FLATTEN_LAYERS = frozenset({LAYER_FAILSAFE, LAYER_PRIMARY_BOT})
+
+REASON_BOOK_EMPTY = "book_empty"
+REASON_NO_CLOSABLE = "no_closable"
+REASON_FLATTEN = "flatten"
+REASON_ABORTED_WINDOW = "aborted_window"
+REASON_ERROR = "error"
+LAST_FLATTEN_REASONS = frozenset(
+    {
+        REASON_BOOK_EMPTY,
+        REASON_NO_CLOSABLE,
+        REASON_FLATTEN,
+        REASON_ABORTED_WINDOW,
+        REASON_ERROR,
+    }
+)
+LAST_FLATTEN_SUFFIX = ".last_flatten.json"
 
 
 @dataclass(frozen=True)
@@ -183,6 +205,219 @@ def ledger_directory(override: str | Path | None = None) -> Path:
     if raw:
         return Path(raw)
     return fabio_bot_root() / "backend" / "paper_book_ledgers"
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def last_flatten_path(
+    book_id: str, directory: str | Path | None = None
+) -> Path:
+    """``<ledger_dir>/<book_id>.last_flatten.json`` — never another book's file."""
+    spec = get_book(book_id)
+    return ledger_directory(directory) / f"{spec.book_id}{LAST_FLATTEN_SUFFIX}"
+
+
+def flatten_sidecar_reason(
+    *,
+    aborted: bool = False,
+    error: bool = False,
+    broker_empty: bool = False,
+    selected_codes_count: int = 0,
+) -> str:
+    """Map a flatten outcome onto the last-run reason enum."""
+    if aborted:
+        return REASON_ABORTED_WINDOW
+    if error:
+        return REASON_ERROR
+    if broker_empty:
+        return REASON_BOOK_EMPTY
+    if int(selected_codes_count) <= 0:
+        return REASON_NO_CLOSABLE
+    return REASON_FLATTEN
+
+
+def last_flatten_payload(
+    *,
+    book_id: str,
+    broker: str | None = None,
+    script: str,
+    started_at_utc: str,
+    finished_at_utc: str | None = None,
+    dry_run: bool,
+    exit_code: int,
+    planned: int,
+    failures: int,
+    selected_codes_count: int,
+    reason: str,
+    layer: str,
+) -> dict[str, Any] | None:
+    """Build a last-run dict, or ``None`` when broker/book would cross-write."""
+    spec = get_book(book_id)
+    wanted = str(broker or spec.broker).strip().lower()
+    if spec.broker != wanted:
+        return None
+    reason_token = str(reason or "").strip()
+    if reason_token not in LAST_FLATTEN_REASONS:
+        return None
+    layer_token = str(layer or "").strip()
+    if layer_token not in LAST_FLATTEN_LAYERS:
+        return None
+    return {
+        "book_id": spec.book_id,
+        "broker": spec.broker,
+        "script": str(script),
+        "layer": layer_token,
+        "started_at_utc": str(started_at_utc),
+        "finished_at_utc": str(finished_at_utc or utc_now_iso()),
+        "dry_run": bool(dry_run),
+        "exit_code": int(exit_code),
+        "planned": int(planned),
+        "failures": int(failures),
+        "selected_codes_count": int(selected_codes_count),
+        "reason": reason_token,
+    }
+
+
+def write_last_flatten(
+    *,
+    book_id: str,
+    broker: str | None = None,
+    script: str,
+    started_at_utc: str,
+    finished_at_utc: str | None = None,
+    dry_run: bool,
+    exit_code: int,
+    planned: int,
+    failures: int,
+    selected_codes_count: int,
+    reason: str,
+    layer: str,
+    directory: str | Path | None = None,
+) -> Path | None:
+    """Atomically write one book's last-flatten sidecar.
+
+    Refuses to write when ``broker`` does not match the book's firm, so a
+    Moomoo fail-safe cannot create a Tradier sidecar (and vice versa). The
+    path is always ``<book_id>.last_flatten.json`` for *this* book only.
+    """
+    payload = last_flatten_payload(
+        book_id=book_id,
+        broker=broker,
+        script=script,
+        started_at_utc=started_at_utc,
+        finished_at_utc=finished_at_utc,
+        dry_run=dry_run,
+        exit_code=exit_code,
+        planned=planned,
+        failures=failures,
+        selected_codes_count=selected_codes_count,
+        reason=reason,
+        layer=layer,
+    )
+    if payload is None:
+        return None
+    path = last_flatten_path(payload["book_id"], directory)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    return path
+
+
+def read_last_flatten(
+    book_id: str, directory: str | Path | None = None
+) -> dict[str, Any] | None:
+    """Load a sidecar if present. Slice 1 / dashboard may ``read_if_exists``."""
+    path = last_flatten_path(book_id, directory)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("book_id") != get_book(book_id).book_id:
+        return None
+    return data
+
+
+def write_failsafe_last_flatten(
+    *,
+    book_id: str,
+    started_at_utc: str,
+    finished_at_utc: str | None = None,
+    dry_run: bool,
+    exit_code: int,
+    planned: int,
+    failures: int,
+    selected_codes_count: int,
+    reason: str,
+    directory: str | Path | None = None,
+) -> Path | None:
+    """Fail-safe scripts only. ``layer: failsafe``; script from the book spec."""
+    spec = get_book(book_id)
+    return write_last_flatten(
+        book_id=spec.book_id,
+        broker=spec.broker,
+        script=spec.flatten_entry,
+        started_at_utc=started_at_utc,
+        finished_at_utc=finished_at_utc,
+        dry_run=dry_run,
+        exit_code=exit_code,
+        planned=planned,
+        failures=failures,
+        selected_codes_count=selected_codes_count,
+        reason=reason,
+        layer=LAYER_FAILSAFE,
+        directory=directory,
+    )
+
+
+def write_primary_last_flatten(
+    *,
+    book_id: str,
+    started_at_utc: str,
+    finished_at_utc: str | None = None,
+    dry_run: bool = False,
+    exit_code: int = 0,
+    planned: int,
+    failures: int,
+    selected_codes_count: int,
+    reason: str,
+    directory: str | Path | None = None,
+) -> Path | None:
+    """In-process ``eod_close_all``. ``layer: primary_bot`` so it is not merged
+    with fail-safe last-run files.
+    """
+    spec = get_book(book_id)
+    return write_last_flatten(
+        book_id=spec.book_id,
+        broker=spec.broker,
+        script=PRIMARY_FLATTEN_SCRIPT,
+        started_at_utc=started_at_utc,
+        finished_at_utc=finished_at_utc,
+        dry_run=dry_run,
+        exit_code=exit_code,
+        planned=planned,
+        failures=failures,
+        selected_codes_count=selected_codes_count,
+        reason=reason,
+        layer=LAYER_PRIMARY_BOT,
+        directory=directory,
+    )
 
 
 def tradier_paper_books_enabled() -> bool:

@@ -650,6 +650,7 @@ def test_gitignore_keeps_health_snapshots_and_paper_book_ledgers():
     text = (BACKEND.parent / ".gitignore").read_text(encoding="utf-8")
     assert "bot_health_snapshots.jsonl" in text
     assert "backend/paper_book_ledgers/" in text
+    assert "*.last_flatten.json" in text
 
 
 def _persist_moomoo_ledgers(tmp_path, *, spy: str, nok: str) -> None:
