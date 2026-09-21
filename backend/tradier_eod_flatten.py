@@ -11,9 +11,13 @@ Live ``api.tradier.com`` / ``--env live`` is refused unless
 ``FABIO_ALLOW_REAL_TRADING=1`` (same allow flag as the Moomoo paper pin).
 Does not read ``MOOMOO_TRADE_ENV``.
 
+``--require-after-et`` mirrors Moomoo: abort (exit 4, sidecar
+``aborted_window``) unless the XNYS fail-safe window has opened, so a 10:00
+launchd fire cannot flatten. Scheduled jobs always pass this flag.
+
 Usage:
-    PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --dry-run
-    PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --scope options
+    PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --dry-run --book orb-tradier
+    PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --scope options --book orb-tradier --require-after-et
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from typing import Any
 from fabio_live.paper_books import (
     BOOK_ORB_TRADIER,
     BROKER_TRADIER,
+    REASON_ABORTED_WINDOW,
     REASON_ERROR,
     REASON_FLATTEN,
     REASON_NO_CLOSABLE,
@@ -120,7 +125,44 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=os.environ.get("TRADIER_LOG_FORMAT", "human"),
         help="human: timestamped text; jsonl: one JSON object per line on stdout",
     )
+    parser.add_argument(
+        "--require-after-et",
+        action="store_true",
+        help="Abort unless US/Eastern weekday and local ET clock is after fail-safe cutoff",
+    )
+    parser.add_argument(
+        "--cutoff-et-hour",
+        type=int,
+        default=15,
+        help="Hour on US/Eastern clock for --require-after-et (default 15 = 3 PM)",
+    )
+    parser.add_argument(
+        "--cutoff-et-minute",
+        type=int,
+        default=45,
+        help="Minute for legacy fixed cutoff (--legacy-fixed-cutoff-et only)",
+    )
+    parser.add_argument(
+        "--legacy-fixed-cutoff-et",
+        action="store_true",
+        help=(
+            "Use Mon–Fri + fixed --cutoff-et-hour/minute for --require-after-et "
+            "(no XNYS calendar). Default is calendar-based fail-safe window."
+        ),
+    )
     return parser
+
+
+def _us_weekday_after_cutoff(now_et: datetime, hour: int, minute: int) -> bool:
+    from fabio_live.calendar_gate import us_weekday_after_cutoff
+
+    return us_weekday_after_cutoff(now_et, hour, minute)
+
+
+def _xnys_failsafe_cutoff_ok(now_et: datetime) -> tuple[bool, str]:
+    from fabio_live.calendar_gate import xnys_failsafe_cutoff_ok
+
+    return xnys_failsafe_cutoff_ok(now_et)
 
 
 def _log(
@@ -196,6 +238,56 @@ def main(argv: list[str] | None = None, *, client=None) -> int:
 
     try:
         enforce_tradier_paper_pin(args.env)  # fail-fast; client constructor pins again
+
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            ZoneInfo = None  # type: ignore
+
+        if args.require_after_et:
+            if ZoneInfo is None:
+                print("ERROR: zoneinfo not available; use Python 3.9+.", file=sys.stderr)
+                return _finish(1, reason=REASON_ERROR)
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            if args.legacy_fixed_cutoff_et:
+                ok = _us_weekday_after_cutoff(
+                    now_et, args.cutoff_et_hour, args.cutoff_et_minute
+                )
+                if not ok:
+                    print(
+                        f"Abort: --require-after-et legacy cutoff "
+                        f"now_et={now_et.isoformat()} "
+                        f"not weekday after "
+                        f"{args.cutoff_et_hour:02d}:{args.cutoff_et_minute:02d} ET.",
+                        file=sys.stderr,
+                    )
+                    return _finish(4, reason=REASON_ABORTED_WINDOW)
+            else:
+                ok, detail = _xnys_failsafe_cutoff_ok(now_et)
+                if not ok:
+                    if detail.startswith("xnys_calendar_unavailable"):
+                        ok2 = _us_weekday_after_cutoff(
+                            now_et, args.cutoff_et_hour, args.cutoff_et_minute
+                        )
+                        if ok2:
+                            print(
+                                "WARN: XNYS calendar unavailable; using legacy "
+                                f"{args.cutoff_et_hour:02d}:{args.cutoff_et_minute:02d} ET cutoff.",
+                                file=sys.stderr,
+                            )
+                        else:
+                            print(
+                                f"Abort: --require-after-et {detail}; legacy cutoff also blocked.",
+                                file=sys.stderr,
+                            )
+                            return _finish(4, reason=REASON_ABORTED_WINDOW)
+                    else:
+                        print(
+                            f"Abort: --require-after-et ({detail}) "
+                            f"now_et={now_et.isoformat()}.",
+                            file=sys.stderr,
+                        )
+                        return _finish(4, reason=REASON_ABORTED_WINDOW)
 
         if client is None:
             from brokers.tradier.client import TradierPaperClient

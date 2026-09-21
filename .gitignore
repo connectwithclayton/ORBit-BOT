@@ -33,6 +33,10 @@ bot_health_snapshots.jsonl
 # Per-book ledgers and last-flatten sidecars (<book_id>.last_flatten.json)
 backend/paper_book_ledgers/
 *.last_flatten.json
+# Per-book fail-safe JSONL (eod_failsafe.<book_id>.jsonl)
+eod_failsafe.jsonl
+eod_failsafe.*.jsonl
+paper_flatten_wrapper.log
 # Live dashboard polling sidecars (beside HTML; not for Pages)
 frontend/bot_live_status.json
 frontend/bot_ops_feed.json

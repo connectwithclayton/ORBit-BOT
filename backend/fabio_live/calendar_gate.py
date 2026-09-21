@@ -1,4 +1,4 @@
-"""CLI gates for launchd jobs: NYSE calendar and session-aware sync audit skips.
+"""CLI gates for launchd jobs: NYSE calendar, sync-audit skips, paper flatten.
 
 Exit codes:
   0 — proceed with the guarded action (or stamp succeeded).
@@ -52,20 +52,66 @@ def _read_stamp_date() -> datetime.date | None:
         return None
 
 
-def should_start_bot(now_et: datetime.datetime | None = None) -> bool:
-    """True if orb_bot_fabio should start (today is an NYSE session day)."""
+def _as_et(now_et: datetime.datetime | None = None) -> datetime.datetime:
     tz = ZoneInfo(MARKET_TIMEZONE)
     if now_et is None:
-        now_et = datetime.datetime.now(tz)
-    elif now_et.tzinfo is None:
-        now_et = now_et.replace(tzinfo=tz)
-    else:
-        now_et = now_et.astimezone(tz)
+        return datetime.datetime.now(tz)
+    if now_et.tzinfo is None:
+        return now_et.replace(tzinfo=tz)
+    return now_et.astimezone(tz)
 
-    today = now_et.date()
+
+def should_start_bot(now_et: datetime.datetime | None = None) -> bool:
+    """True if orb_bot_fabio should start (today is an NYSE session day)."""
+    today = _as_et(now_et).date()
     if not is_nyse_trading_day(today):
         return False
     return True
+
+
+def should_run_failsafe(now_et: datetime.datetime | None = None) -> bool:
+    """True if a paper flatten job should invoke the broker script today.
+
+    Holidays / weekends skip in the wrapper (exit 0). The after-cutoff window
+    is **not** applied here: ``--require-after-et`` on the flatten scripts
+    writes ``aborted_window`` (exit 4) so a weekday 10:00 fire cannot flatten.
+    """
+    return should_start_bot(now_et)
+
+
+def us_weekday_after_cutoff(
+    now_et: datetime.datetime, hour: int, minute: int
+) -> bool:
+    """Legacy Mon–Fri + fixed ET clock cutoff (no XNYS calendar)."""
+    now_et = _as_et(now_et)
+    if now_et.weekday() >= 5:
+        return False
+    cutoff = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return now_et >= cutoff
+
+
+def xnys_failsafe_cutoff_ok(
+    now_et: datetime.datetime,
+) -> tuple[bool, str]:
+    """After session_close - FAILSAFE_MINUTES on NYSE trading days; else explains abort."""
+    now_et = _as_et(now_et)
+    try:
+        from datetime import timedelta
+
+        from fabio_live.constants import FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES
+        from fabio_live.us_equity_calendar import get_nyse_session_schedule_et
+    except ImportError as e:
+        return False, f"xnys_calendar_unavailable:{e}"
+
+    day = now_et.date()
+    sched = get_nyse_session_schedule_et(day)
+    if sched is None:
+        return False, "nyse_not_a_session_day"
+    mins = max(0, int(FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES))
+    cutoff = sched.session_close_et - timedelta(minutes=mins)
+    if now_et >= cutoff:
+        return True, "ok"
+    return False, f"before_failsafe_cutoff want_>={cutoff.isoformat()}"
 
 
 def should_run_sync_audit_intraday(now_et: datetime.datetime | None = None) -> bool:
@@ -140,6 +186,12 @@ def _main(argv: list[str]) -> int:
         help="Record calendar EOD audit complete for Et today.",
     )
 
+    f = sub.add_parser(
+        "should-run-failsafe",
+        help="Exit 0 on NYSE session days; 1 on holidays/weekends (flatten wrapper skip).",
+    )
+    f.add_argument("--json", action="store_true")
+
     args = p.parse_args(argv)
 
     if args.cmd == "should-start-bot":
@@ -166,6 +218,13 @@ def _main(argv: list[str]) -> int:
     if args.cmd == "stamp-sync-audit-eod":
         stamp_sync_audit_eod_date()
         return 0
+
+    if args.cmd == "should-run-failsafe":
+        ok = should_run_failsafe()
+        payload = {"proceed": ok, "reason": "nyse_closed" if not ok else "trading_day"}
+        if getattr(args, "json", False):
+            print(json.dumps(payload, separators=(",", ":")))
+        return 0 if ok else 1
 
     return 2
 

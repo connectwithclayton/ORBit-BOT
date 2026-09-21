@@ -340,23 +340,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def _xnys_failsafe_cutoff_ok(now_et: datetime) -> tuple[bool, str]:
     """After session_close - FAILSAFE_MINUTES on NYSE trading days; else explains abort."""
-    try:
-        from datetime import timedelta
+    from fabio_live.calendar_gate import xnys_failsafe_cutoff_ok
 
-        from fabio_live.constants import FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES
-        from fabio_live.us_equity_calendar import get_nyse_session_schedule_et
-    except ImportError as e:
-        return False, f"xnys_calendar_unavailable:{e}"
-
-    day = now_et.date()
-    sched = get_nyse_session_schedule_et(day)
-    if sched is None:
-        return False, "nyse_not_a_session_day"
-    mins = max(0, int(FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES))
-    cutoff = sched.session_close_et - timedelta(minutes=mins)
-    if now_et >= cutoff:
-        return True, "ok"
-    return False, f"before_failsafe_cutoff want_>={cutoff.isoformat()}"
+    return xnys_failsafe_cutoff_ok(now_et)
 
 
 def main(argv: list[str] | None = None, *, trd_ctx=None) -> int:

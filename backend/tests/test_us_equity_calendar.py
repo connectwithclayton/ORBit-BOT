@@ -11,9 +11,11 @@ from fabio_live.us_equity_calendar import (
 )
 
 from fabio_live.calendar_gate import (
+    should_run_failsafe,
     should_run_sync_audit_eod,
     should_run_sync_audit_intraday,
     should_start_bot,
+    xnys_failsafe_cutoff_ok,
 )
 
 
@@ -82,3 +84,31 @@ def test_should_start_bot_regular_vs_holiday():
     tz = __import__("zoneinfo").ZoneInfo("America/New_York")
     assert should_start_bot(datetime.datetime(2024, 12, 25, 10, 0, 0, tzinfo=tz)) is False
     assert should_start_bot(datetime.datetime(2025, 10, 1, 10, 0, 0, tzinfo=tz)) is True
+
+
+def test_should_run_failsafe_matches_session_day_not_cutoff():
+    tz = __import__("zoneinfo").ZoneInfo("America/New_York")
+    holiday_morning = datetime.datetime(2024, 12, 25, 10, 0, 0, tzinfo=tz)
+    session_morning = datetime.datetime(2025, 10, 1, 10, 0, 0, tzinfo=tz)
+    assert should_run_failsafe(holiday_morning) is False
+    assert should_run_failsafe(session_morning) is True
+    assert should_run_failsafe(session_morning) == should_start_bot(session_morning)
+
+
+def test_xnys_failsafe_cutoff_holiday_and_before_window():
+    tz = __import__("zoneinfo").ZoneInfo("America/New_York")
+    ok, detail = xnys_failsafe_cutoff_ok(
+        datetime.datetime(2024, 12, 25, 15, 50, 0, tzinfo=tz)
+    )
+    assert ok is False
+    assert detail == "nyse_not_a_session_day"
+    ok, detail = xnys_failsafe_cutoff_ok(
+        datetime.datetime(2025, 10, 1, 10, 0, 0, tzinfo=tz)
+    )
+    assert ok is False
+    assert "before_failsafe_cutoff" in detail
+    ok, detail = xnys_failsafe_cutoff_ok(
+        datetime.datetime(2025, 10, 1, 15, 50, 0, tzinfo=tz)
+    )
+    assert ok is True
+    assert detail == "ok"

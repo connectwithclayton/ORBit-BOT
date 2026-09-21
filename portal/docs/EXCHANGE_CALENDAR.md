@@ -11,11 +11,22 @@ Fabio uses **`exchange_calendars`** calendar **`XNYS`** (NYSE regular sessions) 
 
 launchd still fires weekdays at **09:25** local clock; **`portal/run_fabio_if_nyse_trading_day.sh`** skips non-session days. Manual runs exit early unless **`FABIO_IGNORE_NYSE_CALENDAR=1`**.
 
-## Broker fail-safe (`backend/moomoo_eod_failsafe.py`)
+## Broker fail-safe (four paper books)
 
-Separate process; **`FABIO_FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES`** (default **10**) before **`session_close_et`**.
+Separate processes from the primary bot (`eod_close_all` does **not** call these). Ledger-scoped `--book` only — not a firm-wide leftover sweep.
 
-With **`--require-after-et`** (default path): allowed only **on** NYSE session days and **after** that fail-safe cutoff (e.g. ~15:50 ET on a full day, ~12:50 ET before a 13:00 early close). Use **`--legacy-fixed-cutoff-et`** for the old Mon–Fri + fixed hour/minute guard.
+Installer: [`portal/install_paper_flatten_scheduler.sh`](../install_paper_flatten_scheduler.sh) (**`--dry-run`** prints four `launchctl` labels; each argv contains `--book <that id>`). Operator notes + manual verify: [`Paper-Book-Flatten.md`](Paper-Book-Flatten.md).
+
+| Typical weekday (host TZ = `America/New_York`) | Label | Script |
+|---|---|---|
+| 15:50 | `com.claytonorb.paper.flatten.orb-moomoo` | `moomoo_eod_failsafe.py --book orb-moomoo --require-after-et` |
+| 15:52 | `com.claytonorb.paper.flatten.mr-moomoo` | `moomoo_eod_failsafe.py --book mr-moomoo --require-after-et` |
+| 15:54 | `com.claytonorb.paper.flatten.orb-tradier` | `tradier_eod_flatten.py --book orb-tradier --require-after-et` |
+| 15:56 | `com.claytonorb.paper.flatten.mr-tradier` | `tradier_eod_flatten.py --book mr-tradier --require-after-et` |
+
+**`FABIO_FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES`** (default **10**) before **`session_close_et`**.
+
+With **`--require-after-et`** on the **installed argv**: allowed only **on** NYSE session days and **after** that fail-safe cutoff (e.g. ~15:50 ET on a full day, ~12:50 ET before a 13:00 early close). A 10:00 fire cannot flatten. Wrapper `should-run-failsafe` skips holidays; script exit **4** (`aborted_window`) is treated as skip, not a crash-loop. Use **`--legacy-fixed-cutoff-et`** only for the old Mon–Fri + fixed hour/minute guard.
 
 ## Sync audit schedulers
 
