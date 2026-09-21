@@ -391,3 +391,66 @@ def test_tradier_require_after_et_import_error_uses_legacy_cutoff(monkeypatch, t
     assert code == 0
     posts = [c for c in session.calls if c.get("method") == "POST"]
     assert posts == []
+
+
+def _installer_python_stub(tmp_path: Path, n_jobs: int) -> Path:
+    stub = tmp_path / f"python_stub_{n_jobs}"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$*\" == *print-schedule* && \"$*\" == *--bash* ]]; then\n"
+        f"  n={int(n_jobs)}\n"
+        "  i=0\n"
+        "  while [[ $i -lt $n ]]; do\n"
+        "    echo \"flatten-job book-$i 15 $((50 + i)) "
+        "com.claytonorb.paper.flatten.book-$i eod_failsafe.book-$i.jsonl\"\n"
+        "    i=$((i + 1))\n"
+        "  done\n"
+        "  exit 0\n"
+        "fi\n"
+        "exec python3 \"$@\"\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub
+
+
+def _run_flatten_installer(tmp_path: Path, n_jobs: int, *args: str) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{REPO / 'backend'}:{REPO / 'frontend'}"
+    env["PYTHON_BIN"] = str(_installer_python_stub(tmp_path, n_jobs))
+    env["HOME"] = str(tmp_path / "home")
+    return subprocess.run(
+        ["bash", str(INSTALLER), *args],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("n_jobs", [0, 3, 5])
+def test_installer_fails_when_flatten_job_row_count_is_not_four(tmp_path, n_jobs):
+    proc = _run_flatten_installer(tmp_path, n_jobs)
+    assert proc.returncode != 0
+    combined = proc.stdout + proc.stderr
+    assert "installed (four labels" not in combined
+    assert "Expected exactly 4 flatten-job rows" in combined
+    agents = tmp_path / "home" / "Library" / "LaunchAgents"
+    written = list(agents.glob("com.claytonorb.paper.flatten.*.plist")) if agents.is_dir() else []
+    assert written == []
+
+
+def test_installer_writes_exactly_four_plists_before_success(tmp_path):
+    proc = _run_flatten_installer(tmp_path, 4)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "installed (four labels" in combined
+    agents = tmp_path / "home" / "Library" / "LaunchAgents"
+    written = sorted(p.name for p in agents.glob("com.claytonorb.paper.flatten.*.plist"))
+    assert written == [
+        "com.claytonorb.paper.flatten.book-0.plist",
+        "com.claytonorb.paper.flatten.book-1.plist",
+        "com.claytonorb.paper.flatten.book-2.plist",
+        "com.claytonorb.paper.flatten.book-3.plist",
+    ]

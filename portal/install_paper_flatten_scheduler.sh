@@ -27,6 +27,7 @@ PYTHONPATH_VAL="${FABIO_ROOT}/backend:${FABIO_ROOT}/frontend"
 export PYTHONPATH="$PYTHONPATH_VAL"
 WRAP="$FABIO_ROOT/portal/run_paper_flatten_book.sh"
 BOOT_LOG_DIR="$HOME/Library/Logs/ClaytonOrb"
+EXPECTED_FLATTEN_JOBS=4
 MODE="install"
 if [[ "${1:-}" == "--dry-run" ]]; then
   MODE="dry-run"
@@ -49,6 +50,7 @@ if [[ ! -f "$WRAP" ]]; then
 fi
 
 print_dry_run() {
+  local jobs_file="$1"
   echo "Paper flatten jobs (always all four). Host TZ must be America/New_York."
   echo "launchd Hour/Minute is the Mac local clock. KeepAlive=false. Paper only."
   echo "Moomoo argv pins --trd-env SIMULATE (never REAL / host MOOMOO_TRADE_ENV)."
@@ -64,15 +66,39 @@ print_dry_run() {
     echo "    inner argv: $("$PYTHON" -m fabio_live.paper_flatten_jobs print-argv --book "$BOOK" | tr '\n' ' ')"
     echo "    jsonl (gitignored): $FABIO_ROOT/$JSONL"
     echo ""
-  done < <(flatten_job_rows)
+  done < "$jobs_file"
   echo "Useful:"
   echo "  launchctl list | grep claytonorb.paper.flatten"
   echo "  Uninstall: bash portal/install_paper_flatten_scheduler.sh --uninstall"
   echo "  Manual verify: portal/docs/Paper-Book-Flatten.md"
 }
 
-flatten_job_rows() {
-  "$PYTHON" -m fabio_live.paper_flatten_jobs print-schedule --bash | grep '^flatten-job '
+# Capture print-schedule --bash and require exactly four flatten-job rows.
+# Process substitution would hide Python/grep failures from set -e.
+collect_flatten_job_rows() {
+  local dest="$1"
+  local raw rc n
+  raw="$(mktemp)"
+  set +e
+  "$PYTHON" -m fabio_live.paper_flatten_jobs print-schedule --bash >"$raw" 2>"${raw}.err"
+  rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    echo "❌ print-schedule --bash failed (exit ${rc})." >&2
+    if [[ -s "${raw}.err" ]]; then
+      cat "${raw}.err" >&2
+    fi
+    rm -f "$raw" "${raw}.err"
+    return 1
+  fi
+  grep '^flatten-job ' "$raw" >"$dest" || true
+  rm -f "$raw" "${raw}.err"
+  n="$(wc -l <"$dest" | tr -d '[:space:]')"
+  if [[ "$n" -ne "$EXPECTED_FLATTEN_JOBS" ]]; then
+    echo "❌ Expected exactly ${EXPECTED_FLATTEN_JOBS} flatten-job rows, got ${n}." >&2
+    return 1
+  fi
+  return 0
 }
 
 weekday_calendar_xml() {
@@ -130,11 +156,18 @@ EOF
 }
 
 if [[ "$MODE" == "dry-run" ]]; then
-  print_dry_run
+  JOBS_FILE="$(mktemp)"
+  trap 'rm -f "$JOBS_FILE"' EXIT
+  collect_flatten_job_rows "$JOBS_FILE"
+  print_dry_run "$JOBS_FILE"
   exit 0
 fi
 
 chmod +x "$WRAP" 2>/dev/null || true
+
+JOBS_FILE="$(mktemp)"
+trap 'rm -f "$JOBS_FILE"' EXIT
+collect_flatten_job_rows "$JOBS_FILE"
 
 if [[ "$MODE" == "uninstall" ]]; then
   while read -r _pfx BOOK HOUR MINUTE LABEL JSONL; do
@@ -144,14 +177,20 @@ if [[ "$MODE" == "uninstall" ]]; then
     fi
     rm -f "$plist"
     echo "Removed $LABEL"
-  done < <(flatten_job_rows)
+  done < "$JOBS_FILE"
   echo "✅ Paper flatten schedulers uninstalled."
   exit 0
 fi
 
+WRITTEN=0
 LOADED=0
 while read -r _pfx BOOK HOUR MINUTE LABEL JSONL; do
   plist="$(write_plist "$BOOK" "$HOUR" "$MINUTE" "$LABEL")"
+  if [[ ! -f "$plist" ]]; then
+    echo "❌ Failed to write plist for ${LABEL}" >&2
+    exit 1
+  fi
+  WRITTEN=$((WRITTEN + 1))
   if command -v launchctl >/dev/null 2>&1; then
     launchctl unload "$plist" 2>/dev/null || true
     if launchctl load "$plist"; then
@@ -163,7 +202,12 @@ while read -r _pfx BOOK HOUR MINUTE LABEL JSONL; do
   else
     echo "⚠ launchctl not found; wrote $plist (load on the Mac trading host)."
   fi
-done < <(flatten_job_rows)
+done < "$JOBS_FILE"
+
+if [[ "$WRITTEN" -ne "$EXPECTED_FLATTEN_JOBS" ]]; then
+  echo "❌ Wrote ${WRITTEN} plist(s); expected exactly ${EXPECTED_FLATTEN_JOBS}." >&2
+  exit 1
+fi
 
 echo "✅ Paper flatten schedulers installed (four labels, paper only)."
 echo "   Host TZ must be America/New_York."
