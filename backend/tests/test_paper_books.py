@@ -28,6 +28,7 @@ from fabio_live.paper_books import (
     flatten_symbol_filters,
     init_book_circuit,
     is_allowed_open_position_notes,
+    load_all_ledgers,
     modeled_book_equity,
     select_flatten_codes,
     try_bind_tradier_books,
@@ -296,8 +297,13 @@ def test_flatten_tracked_only_closes_that_book(tmp_path):
     assert orb_mgr.closed == ["SPY"]
     assert mr_mgr.closed == []
     assert "NOK" in mr_mgr.positions
+    assert orb.ledger.codes == set()
+    orb_disk = PaperBookLedger(BOOK_ORB_MOOMOO, directory=tmp_path)
+    assert orb_disk.load() is True
+    assert orb_disk.codes == set()
     mr.flatten_tracked(reason="EOD")
     assert mr_mgr.closed == ["NOK"]
+    assert mr.ledger.codes == set()
 
 
 def test_tradier_order_manager_is_execution_port_and_mocked_http():
@@ -644,3 +650,149 @@ def test_gitignore_keeps_health_snapshots_and_paper_book_ledgers():
     text = (BACKEND.parent / ".gitignore").read_text(encoding="utf-8")
     assert "bot_health_snapshots.jsonl" in text
     assert "backend/paper_book_ledgers/" in text
+
+
+def _persist_moomoo_ledgers(tmp_path, *, spy: str, nok: str) -> None:
+    orb = PaperBookLedger(BOOK_ORB_MOOMOO, directory=tmp_path)
+    orb.add(spy)
+    assert orb.save() is True
+    mr = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    mr.add(nok)
+    assert mr.save() is True
+
+
+def test_restart_empty_om_does_not_erase_persisted_ledgers(tmp_path):
+    spy = "US.SPY261016C00500000"
+    nok = "US.NOK261016C00010000"
+    _persist_moomoo_ledgers(tmp_path, spy=spy, nok=nok)
+
+    reg = PaperBookRegistry()
+    orb = reg.bind(
+        BOOK_ORB_MOOMOO,
+        order_mgr=SimpleNamespace(positions={}),
+        ledger_dir=tmp_path,
+    )
+    mr = reg.bind(
+        BOOK_MR_MOOMOO,
+        order_mgr=SimpleNamespace(positions={}),
+        ledger_dir=tmp_path,
+    )
+    assert spy in orb.ledger.codes
+    assert nok in mr.ledger.codes
+    assert orb.cb.portfolio_at_open == PAPER_BOOK_STARTING_BALANCE == 10_000.0
+    assert mr.cb.portfolio_at_open == 10_000.0
+
+    reg.sync_and_save()
+    reg.sync_strategy_ledgers("mr")
+    tables = load_all_ledgers(tmp_path)
+    assert spy in tables[BOOK_ORB_MOOMOO]
+    assert nok in tables[BOOK_MR_MOOMOO]
+
+    from fabio_live.bot import ORBBot
+
+    bot = ORBBot.__new__(ORBBot)
+    bot._paper_books = reg
+    bot._sync_mr_paper_book_ledgers()
+    again = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    assert again.load() is True
+    assert nok in again.codes
+    orb_again = PaperBookLedger(BOOK_ORB_MOOMOO, directory=tmp_path)
+    assert orb_again.load() is True
+    assert spy in orb_again.codes
+
+
+def test_save_after_empty_om_does_not_wipe_disk(tmp_path):
+    spy = "US.SPY261016C00500000"
+    nok = "US.NOK261016C00010000"
+    _persist_moomoo_ledgers(tmp_path, spy=spy, nok=nok)
+    ledger = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    assert ledger.load() is True
+    ledger.replace_codes([])
+    assert ledger.save() is False
+    assert nok in ledger.codes
+    disk = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    assert disk.load() is True
+    assert nok in disk.codes
+
+    empty = PaperBookLedger(BOOK_ORB_MOOMOO, directory=tmp_path)
+    empty.replace_codes([])
+    assert empty.save() is False
+    orb_disk = PaperBookLedger(BOOK_ORB_MOOMOO, directory=tmp_path)
+    assert orb_disk.load() is True
+    assert spy in orb_disk.codes
+
+
+def test_orphan_sweep_cannot_close_sibling_moomoo_after_restart(tmp_path):
+    import pandas as pd
+    from fabio_live.bot import ORBBot
+
+    spy = "US.SPY261016C00500000"
+    nok = "US.NOK261016C00010000"
+    _persist_moomoo_ledgers(tmp_path, spy=spy, nok=nok)
+
+    sold: list[str] = []
+    orb_om = SimpleNamespace(
+        trd_env="SIMULATE",
+        positions={},
+        _sell=lambda code, qty, label="": sold.append(code),
+    )
+    mr_om = SimpleNamespace(positions={})
+    reg = PaperBookRegistry()
+    reg.bind(BOOK_ORB_MOOMOO, order_mgr=orb_om, ledger_dir=tmp_path)
+    reg.bind(BOOK_MR_MOOMOO, order_mgr=mr_om, ledger_dir=tmp_path)
+
+    protected = reg.protected_codes_for_broker(
+        "moomoo", except_book=BOOK_ORB_MOOMOO
+    )
+    assert nok in protected
+    assert spy not in protected
+
+    bot = ORBBot.__new__(ORBBot)
+    bot.signals = {}
+    bot._mr_executors = []
+    bot._mr_executor = None
+    bot._paper_books = reg
+    bot.order_mgr = orb_om
+    bot.ops = SimpleNamespace(alert=lambda *_a, **_k: None, log_alert=lambda *_a, **_k: None)
+    bot.trade_ctx = SimpleNamespace(
+        position_list_query=lambda **_k: (
+            0,
+            pd.DataFrame(
+                [
+                    {"code": spy, "qty": 1, "unrealized_pl": 0.0},
+                    {"code": nok, "qty": 1, "unrealized_pl": 0.0},
+                ]
+            ),
+        )
+    )
+    bot.eod_close_all()
+    assert nok not in sold
+    disk = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    assert disk.load() is True
+    assert nok in disk.codes
+    failsafe = load_all_ledgers(tmp_path)
+    assert nok in failsafe[BOOK_MR_MOOMOO]
+    assert spy in failsafe[BOOK_ORB_MOOMOO]
+    orb_only, exclude = flatten_symbol_filters(
+        BOOK_ORB_MOOMOO, "moomoo", failsafe
+    )
+    assert nok in exclude
+    assert nok not in orb_only
+
+
+def test_sync_unions_om_fills_onto_persisted_codes(tmp_path):
+    nok = "US.NOK261016C00010000"
+    ibm = "US.IBM261016C00250000"
+    existing = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    existing.add(nok)
+    assert existing.save() is True
+    om = SimpleNamespace(positions={"IBM": {"code": ibm}})
+    rt = PaperBookRegistry().bind(
+        BOOK_MR_MOOMOO, order_mgr=om, ledger_dir=tmp_path
+    )
+    assert nok in rt.ledger.codes
+    assert ibm in rt.ledger.codes
+    rt.ledger.save()
+    disk = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    assert disk.load() is True
+    assert disk.codes == {nok, ibm}

@@ -247,6 +247,13 @@ class PaperBookLedger:
     def replace_codes(self, codes: Iterable[str]) -> None:
         self.codes = {str(c).strip() for c in codes if str(c).strip()}
 
+    def merge_codes(self, codes: Iterable[str]) -> None:
+        """Union broker codes from fills. Never used to wipe disk truth."""
+        for raw in codes:
+            token = str(raw or "").strip()
+            if token:
+                self.codes.add(token)
+
     def add(self, code: str) -> None:
         token = str(code or "").strip()
         if token:
@@ -271,7 +278,19 @@ class PaperBookLedger:
         self.replace_codes(str(x) for x in raw)
         return True
 
-    def save(self) -> bool:
+    def save(self, *, allow_empty: bool = False) -> bool:
+        """Persist this book's codes.
+
+        Refuse to write an empty code set over a non-empty on-disk ledger
+        unless ``allow_empty`` (intentional flatten / clear). An empty OM
+        after restart is not a flatten.
+        """
+        if not self.codes and not allow_empty:
+            existing = PaperBookLedger(self.book_id, directory=self.directory)
+            if existing.load() and existing.codes:
+                self.codes = set(existing.codes)
+                return False
+            return True
         path = self.path
         payload = {
             "book_id": self.book_id,
@@ -427,8 +446,20 @@ class PaperBookRuntime:
     def modeled_equity(self) -> float:
         return modeled_book_equity(self.cb, starting=self.spec.starting_balance)
 
-    def sync_ledger_from_positions(self) -> None:
-        self.ledger.replace_codes(codes_from_order_mgr(self.order_mgr))
+    def sync_ledger_from_positions(self, *, replace: bool = False) -> None:
+        """Update the ledger from this book's OrderManager.
+
+        Default is union: new OM fills are added, but an empty OM (restart,
+        hydrate) does not wipe persisted codes. ``replace=True`` is only for
+        an intentional flatten that should match remaining OM positions.
+        """
+        om_codes = codes_from_order_mgr(self.order_mgr)
+        if replace:
+            self.ledger.replace_codes(om_codes)
+            return
+        if not om_codes:
+            return
+        self.ledger.merge_codes(om_codes)
 
     def flatten_tracked(self, *, reason: str = "EOD") -> list[dict[str, Any]]:
         """Market-close only this book's tracked symbols. Never another book."""
@@ -443,8 +474,10 @@ class PaperBookRuntime:
                 pnl = float(result.get("pnl", 0.0) or 0.0)
                 self.cb.record_result(pnl)
             results.append(result)
-        self.sync_ledger_from_positions()
-        self.ledger.save()
+        # Intentional flatten: remaining OM codes (possibly empty) replace
+        # the ledger and may persist empty over the previous file.
+        self.sync_ledger_from_positions(replace=True)
+        self.ledger.save(allow_empty=True)
         return results
 
 
@@ -475,6 +508,7 @@ class PaperBookRegistry:
         runtime = PaperBookRuntime(
             spec=spec, order_mgr=order_mgr, cb=circuit, ledger=ledger
         )
+        # Union OM fills onto disk truth. Empty OM after restart must not wipe.
         runtime.sync_ledger_from_positions()
         self._books[spec.book_id] = runtime
         return runtime
@@ -492,13 +526,36 @@ class PaperBookRegistry:
         token = str(broker or "").strip().lower()
         return [rt for rt in self._books.values() if rt.spec.broker == token]
 
+    def _ledger_dir_for(self, book_id: str) -> Path | None:
+        rt = self._books.get(get_book(book_id).book_id)
+        if rt is not None:
+            return rt.ledger.directory
+        for existing in self._books.values():
+            if existing.ledger.directory is not None:
+                return existing.ledger.directory
+        return None
+
     def protected_codes_for_broker(
         self, broker: str, *, except_book: str | None = None
     ) -> set[str]:
+        """Sibling book codes on this firm that the ORB orphan sweep must skip.
+
+        Disk ledgers are included even when the sibling OM is empty after a
+        restart (or the sibling runtime is not bound this boot).
+        """
         skip = get_book(except_book).book_id if except_book else None
+        token = str(broker or "").strip().lower()
         out: set[str] = set()
-        for rt in self.books_for_broker(broker):
-            if skip and rt.spec.book_id == skip:
+        for spec in ALL_PAPER_BOOKS:
+            if spec.broker != token or spec.book_id == skip:
+                continue
+            disk = PaperBookLedger(
+                spec.book_id, directory=self._ledger_dir_for(spec.book_id)
+            )
+            disk.load()
+            out.update(disk.codes)
+            rt = self.get(spec.book_id)
+            if rt is None:
                 continue
             rt.sync_ledger_from_positions()
             out.update(rt.ledger.codes)
