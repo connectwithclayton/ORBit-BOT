@@ -8,8 +8,10 @@ from unittest.mock import patch
 from dashboard_writer import (
     DashboardWriter,
     aggregate_closed_positions,
+    dashboard_row_derived_from_moomoo_sync,
     moomoo_position_records_to_dashboard_opens,
     normalize_and_validate_open_positions,
+    tradier_position_records_to_dashboard_opens,
 )
 
 
@@ -334,6 +336,36 @@ def test_normalize_and_validate_open_positions():
     )
     assert dropped == 3
     assert cleaned == [fifo_row]
+
+
+def test_normalize_keeps_four_book_sources_and_preserves_moomoo_fifo():
+    fifo = {"symbol": "SPY", "contracts": 2, "notes": "moomoo_paper_fifo"}
+    tradier = {"symbol": "QQQ", "contracts": 1, "notes": "source=tradier_paper"}
+    mr = {"symbol": "NOK", "contracts": 1, "notes": "source=mr"}
+    mr_t = {"symbol": "IBM", "contracts": 1, "notes": "source=mr_tradier"}
+    cleaned, dropped = normalize_and_validate_open_positions(
+        [fifo, tradier, mr, mr_t, {"symbol": "X", "contracts": 1, "notes": "random"}]
+    )
+    assert dropped == 1
+    assert [r["notes"] for r in cleaned] == [
+        "moomoo_paper_fifo",
+        "source=tradier_paper",
+        "source=mr",
+        "source=mr_tradier",
+    ]
+    assert dashboard_row_derived_from_moomoo_sync(fifo) is True
+    assert dashboard_row_derived_from_moomoo_sync(tradier) is False
+    assert dashboard_row_derived_from_moomoo_sync(mr_t) is False
+
+
+def test_tradier_position_records_not_tagged_moomoo_fifo():
+    out = tradier_position_records_to_dashboard_opens(
+        [{"symbol": "SPY261016C00500000", "quantity": 2, "cost_basis": 1.25}]
+    )
+    assert len(out) == 1
+    assert out[0]["symbol"] == "SPY"
+    assert out[0]["notes"] == "source=tradier_paper"
+    assert "moomoo_paper_fifo" not in out[0]["notes"]
 
 
 def test_init_strips_legacy_trade_shaped_opens(tmp_path):

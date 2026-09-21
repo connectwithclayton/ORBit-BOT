@@ -31,6 +31,11 @@ from config import (
 )
 from backtest.fabio.settings import FabioBacktestSettings
 from brokers.names import resolve_execution_broker
+from fabio_live.paper_books import (
+    ALL_PAPER_BOOKS,
+    PAPER_BOOK_STARTING_BALANCE,
+    enabled_paper_book_ids,
+)
 from paper_pin import (
     ALLOW_REAL_ENV,
     allow_real_trading_enabled,
@@ -158,12 +163,27 @@ def main() -> None:
     print(
         f"- MR paper auto-trade: {'ON' if mr_on else 'OFF'} "
         "(FABIO_MR_PAPER_ENABLED; default off — ORB loop unchanged). "
-        "Moomoo SIMULATE OrderManager only; does not enable Tradier dual books. "
+        "Moomoo SIMULATE OrderManager on the MR-Moomoo book "
+        "(separate OM/CB from ORB-Moomoo). "
         "Hard isolate: source=mr lock-ins only; refuse occupied underlyings; "
         "JSONL cursor beside FABIO_MR_QUEUE_PATH; "
         f"ORB-symbol entries {'allowed' if mr_allow_orb else 'denied'} "
         "(FABIO_MR_ALLOW_ORB_SYMBOLS)."
     )
+    print(
+        "- Four isolated paper books (ORB×Moomoo, ORB×Tradier, MR×Moomoo, MR×Tradier): "
+        f"${PAPER_BOOK_STARTING_BALANCE:,.0f} start / CB denominator each "
+        "(ORB-Moomoo included; not OpenD get_portfolio_value); "
+        "separate OM/CB/ledger/flatten. "
+        "No shared flatten across brokers. Default boot is still ORB-Moomoo OpenD. "
+        "FABIO_TRADIER_PAPER_BOOKS=1 enables Tradier books (sandbox pin). "
+        f"Runtime enabled: {', '.join(enabled_paper_book_ids())}."
+    )
+    for spec in ALL_PAPER_BOOKS:
+        print(
+            f"    {spec.book_id}: source={spec.source} fifo={spec.fifo_notes} "
+            f"flatten={spec.flatten_entry} --book {spec.book_id}"
+        )
 
 
 if __name__ == "__main__":
