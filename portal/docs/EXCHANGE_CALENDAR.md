@@ -19,14 +19,16 @@ Installer: [`portal/install_paper_flatten_scheduler.sh`](../install_paper_flatte
 
 | Typical weekday (host TZ = `America/New_York`) | Label | Script |
 |---|---|---|
-| 15:50 | `com.claytonorb.paper.flatten.orb-moomoo` | `moomoo_eod_failsafe.py --book orb-moomoo --require-after-et` |
-| 15:52 | `com.claytonorb.paper.flatten.mr-moomoo` | `moomoo_eod_failsafe.py --book mr-moomoo --require-after-et` |
+| 15:50 | `com.claytonorb.paper.flatten.orb-moomoo` | `moomoo_eod_failsafe.py --book orb-moomoo --require-after-et --trd-env SIMULATE` |
+| 15:52 | `com.claytonorb.paper.flatten.mr-moomoo` | `moomoo_eod_failsafe.py --book mr-moomoo --require-after-et --trd-env SIMULATE` |
 | 15:54 | `com.claytonorb.paper.flatten.orb-tradier` | `tradier_eod_flatten.py --book orb-tradier --require-after-et` |
 | 15:56 | `com.claytonorb.paper.flatten.mr-tradier` | `tradier_eod_flatten.py --book mr-tradier --require-after-et` |
 
 **`FABIO_FAILSAFE_CLOSE_BEFORE_SESSION_MINUTES`** (default **10**) before **`session_close_et`**.
 
-With **`--require-after-et`** on the **installed argv**: allowed only **on** NYSE session days and **after** that fail-safe cutoff (e.g. ~15:50 ET on a full day, ~12:50 ET before a 13:00 early close). A 10:00 fire cannot flatten. Wrapper `should-run-failsafe` skips holidays; script exit **4** (`aborted_window`) is treated as skip, not a crash-loop. Use **`--legacy-fixed-cutoff-et`** only for the old Mon–Fri + fixed hour/minute guard.
+With **`--require-after-et`** on the **installed argv**: allowed only **on** NYSE session days and **after** that fail-safe cutoff (e.g. ~15:50 ET on a full day, ~12:50 ET before a 13:00 early close). A 10:00 fire cannot flatten. Wrapper `should-run-failsafe` skips holidays; script exit **4** (`aborted_window`) is treated as skip, not a crash-loop. Use **`--legacy-fixed-cutoff-et`** only for the old Mon–Fri + fixed hour/minute guard. Moomoo scheduled argv pins **`--trd-env SIMULATE`** (never REAL; ignores host `MOOMOO_TRADE_ENV` for that process).
+
+**Early-close fire times (Slice 1 accepted gap):** launchd minutes are **fixed 15:50–15:56 ET**, not computed from `session_close_et`. On early-close days the *window* moves (~12:50) but the jobs still fire at 15:50–15:56. Calendar-aware / session_close-relative fire times are a **follow-up**; this ship does not implement them.
 
 ## Sync audit schedulers
 

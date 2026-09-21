@@ -3,9 +3,13 @@
 One process per book. Moomoo books never emit ``tradier_eod_flatten.py``.
 Tradier books never emit ``moomoo_eod_failsafe.py``. ``--book <id>`` is always
 present; argparse defaults are not used. Wrappers must not pass REAL / live /
-``FABIO_ALLOW_REAL_TRADING``.
+``FABIO_ALLOW_REAL_TRADING``. Moomoo scheduled argv pins ``--trd-env SIMULATE``
+so a host with ``MOOMOO_TRADE_ENV=REAL`` still paper-flattens (does not refuse).
 
 Does not invoke fail-safe from ``eod_close_all``. Paper only. No exercise.
+
+Slice 1 launchd clocks are fixed 15:50–15:56 ET (not session_close-relative).
+Early-close / calendar-aware fire times are a follow-up.
 """
 
 from __future__ import annotations
@@ -34,22 +38,24 @@ LAUNCHD_LABEL_PREFIX = "com.claytonorb.paper.flatten"
 JSONL_NAME_PREFIX = "eod_failsafe"
 ABORTED_WINDOW_EXIT = 4
 # Stagger: Moomoo first (shared OpenD), then Tradier. Host TZ must be America/New_York.
+# Fixed weekday clocks — not session_close-relative (early-close fire times: follow-up).
 PAPER_FLATTEN_STAGGER_ET: tuple[tuple[str, int, int], ...] = (
     ("orb-moomoo", 15, 50),
     ("mr-moomoo", 15, 52),
     ("orb-tradier", 15, 54),
     ("mr-tradier", 15, 56),
 )
+# Never emit these. Moomoo jobs pass ``--trd-env SIMULATE`` (not in this set).
 FORBIDDEN_ARGV_TOKENS = frozenset(
     {
         "REAL",
         "live",
-        "--trd-env",
         "--env",
         "FABIO_ALLOW_REAL_TRADING",
         "--live",
     }
 )
+MOOMOO_TRD_ENV_PIN = "SIMULATE"
 
 
 @dataclass(frozen=True)
@@ -93,7 +99,8 @@ def paper_flatten_argv(book_id: str) -> list[str]:
     """Python argv (script + flags). Always includes ``--book <id>``.
 
     Never emits the other broker's flatten script. Never includes REAL / live
-    / ``FABIO_ALLOW_REAL_TRADING`` / ``--trd-env`` / ``--env``.
+    / ``FABIO_ALLOW_REAL_TRADING`` / ``--env``. Moomoo jobs pin
+    ``--trd-env SIMULATE`` (do not rely on host ``MOOMOO_TRADE_ENV``).
     """
     spec = get_book(book_id)
     script = flatten_script_relpath(spec.book_id)
@@ -107,6 +114,8 @@ def paper_flatten_argv(book_id: str) -> list[str]:
         "--log-format",
         "jsonl",
     ]
+    if spec.broker == BROKER_MOOMOO:
+        argv.extend(["--trd-env", MOOMOO_TRD_ENV_PIN])
     _assert_isolated_argv(spec.book_id, argv)
     return argv
 
@@ -128,11 +137,20 @@ def _assert_isolated_argv(book_id: str, argv: Sequence[str]) -> None:
             raise ValueError(f"Moomoo book {book_id} must not emit Tradier flatten script")
         if FLATTEN_MOOMOO not in script:
             raise ValueError(f"Moomoo book {book_id} must emit {FLATTEN_MOOMOO}")
+        if "--trd-env" not in argv:
+            raise ValueError(f"Moomoo book {book_id} must pin --trd-env {MOOMOO_TRD_ENV_PIN}")
+        env_idx = list(argv).index("--trd-env")
+        if env_idx + 1 >= len(argv) or argv[env_idx + 1] != MOOMOO_TRD_ENV_PIN:
+            raise ValueError(
+                f"Moomoo book {book_id} --trd-env must be {MOOMOO_TRD_ENV_PIN}, never REAL"
+            )
     elif spec.broker == BROKER_TRADIER:
         if FLATTEN_MOOMOO in script or "moomoo_eod_failsafe" in script:
             raise ValueError(f"Tradier book {book_id} must not emit Moomoo flatten script")
         if FLATTEN_TRADIER not in script:
             raise ValueError(f"Tradier book {book_id} must emit {FLATTEN_TRADIER}")
+        if "--trd-env" in argv:
+            raise ValueError(f"Tradier book {book_id} must not pass Moomoo --trd-env")
 
 
 def wrapper_process_exit_code(script_exit_code: int) -> int:

@@ -3,6 +3,8 @@
 # Requires --book <id> on this argv (never rely on Python argparse defaults).
 # NYSE closed days skip (exit 0). Flatten script exit 4 (aborted_window) is skip.
 # Paper only: never passes --trd-env REAL, --env live, or FABIO_ALLOW_REAL_TRADING.
+# Moomoo flatten argv (paper_flatten_jobs) pins --trd-env SIMULATE.
+# Slice 1 launchd clocks are fixed 15:50–15:56 ET; early-close fire times are a follow-up.
 # Does not invoke fail-safe from eod_close_all. Closes in the market; no exercise.
 #
 # Bash 3.2 compatible (macOS /bin/bash). One wrapper, four launchd labels.

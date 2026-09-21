@@ -7,8 +7,12 @@
 #
 # Stagger (host local clock; set Mac TZ to America/New_York):
 #   15:50 orb-moomoo, 15:52 mr-moomoo, 15:54 orb-tradier, 15:56 mr-tradier
+# Slice 1: these are FIXED weekday clocks, not session_close-relative.
+# NYSE early-close (e.g. 13:00) is an accepted gap — jobs still fire at 15:50–15:56.
+# Calendar-aware / session_close-relative fire times are a follow-up.
 #
-# Each job argv contains --book <that id>. Wrappers never pass REAL / live /
+# Each job argv contains --book <that id>. Moomoo inner argv pins --trd-env SIMULATE
+# (never REAL; do not rely on host MOOMOO_TRADE_ENV). Wrappers never pass REAL / live /
 # FABIO_ALLOW_REAL_TRADING. KeepAlive false. Exit 4 (aborted_window) is skip.
 #
 # Usage:
@@ -47,6 +51,8 @@ fi
 print_dry_run() {
   echo "Paper flatten jobs (always all four). Host TZ must be America/New_York."
   echo "launchd Hour/Minute is the Mac local clock. KeepAlive=false. Paper only."
+  echo "Moomoo argv pins --trd-env SIMULATE (never REAL / host MOOMOO_TRADE_ENV)."
+  echo "Early-close fire times are a follow-up: Slice 1 uses fixed 15:50–15:56 ET."
   echo ""
   "$PYTHON" -m fabio_live.paper_flatten_jobs print-schedule
   echo ""

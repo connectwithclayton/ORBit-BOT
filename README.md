@@ -93,10 +93,11 @@ PYTHONPATH=backend:frontend python3 backend/moomoo_eod_failsafe.py --dry-run --b
 PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --dry-run --book orb-tradier
 
 # Four paper fail-safe launchd jobs (preview labels + --book argv; Mac host TZ = America/New_York)
+# Slice 1: fixed 15:50–15:56 ET clocks. Early-close / calendar-aware fire times are a follow-up.
 PYTHONPATH=backend:frontend bash portal/install_paper_flatten_scheduler.sh --dry-run
 ```
 
-Independent flatten if the desk bot dies before 15:45 ET: [`portal/docs/Paper-Book-Flatten.md`](portal/docs/Paper-Book-Flatten.md).
+Independent flatten if the desk bot dies before 15:45 ET: [`portal/docs/Paper-Book-Flatten.md`](portal/docs/Paper-Book-Flatten.md). Moomoo scheduled argv pins `--trd-env SIMULATE` (never REAL). Early-close launchd minutes are **not** calendar-aware in this ship.
 
 Shared strategy tunables: [`backend/backtest/fabio/settings.py`](backend/backtest/fabio/settings.py). Integration env (hosts, tokens): [`backend/config.py`](backend/config.py). Paper-book identity: [`backend/fabio_live/paper_books.py`](backend/fabio_live/paper_books.py).
 

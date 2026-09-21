@@ -27,6 +27,7 @@ from fabio_live.paper_flatten_jobs import (
     ABORTED_WINDOW_EXIT,
     FORBIDDEN_ARGV_TOKENS,
     LAUNCHD_LABEL_PREFIX,
+    MOOMOO_TRD_ENV_PIN,
     _main as flatten_jobs_main,
     jsonl_filename_for_book,
     launchd_label_for_book,
@@ -58,6 +59,10 @@ def test_argv_builder_never_emits_tradier_script_for_moomoo_book():
         assert "--require-after-et" in argv
         assert "--scope" in argv and "options" in argv
         assert "--log-format" in argv and "jsonl" in argv
+        assert "--trd-env" in argv
+        assert argv[argv.index("--trd-env") + 1] == MOOMOO_TRD_ENV_PIN == "SIMULATE"
+        assert "REAL" not in argv
+        assert "FABIO_ALLOW_REAL_TRADING" not in argv
         assert not (FORBIDDEN_ARGV_TOKENS & set(argv))
 
 
@@ -69,10 +74,13 @@ def test_argv_builder_never_omits_book_and_never_crosses_brokers():
         if spec.broker == BROKER_MOOMOO:
             assert FLATTEN_MOOMOO in argv[0]
             assert FLATTEN_TRADIER not in argv[0]
+            assert argv[argv.index("--trd-env") + 1] == "SIMULATE"
         else:
             assert FLATTEN_TRADIER in argv[0]
             assert FLATTEN_MOOMOO not in argv[0]
             assert "moomoo_eod_failsafe" not in " ".join(argv)
+            assert "--trd-env" not in argv
+            assert "SIMULATE" not in argv
 
 
 def test_print_argv_requires_book_flag():
@@ -103,6 +111,12 @@ def test_scheduled_jobs_are_four_staggered_independent_labels():
         assert f"--book {job.book_id}" in " ".join(job.argv)
         assert job.argv[job.argv.index("--book") + 1] == job.book_id
         assert job.jsonl == f"eod_failsafe.{job.book_id}.jsonl"
+        if job.book_id in (BOOK_ORB_MOOMOO, BOOK_MR_MOOMOO):
+            assert "--trd-env" in job.argv
+            assert job.argv[job.argv.index("--trd-env") + 1] == "SIMULATE"
+            assert "REAL" not in job.argv
+        else:
+            assert "--trd-env" not in job.argv
 
 
 def test_wrapper_maps_aborted_window_exit_to_skip():
@@ -132,7 +146,8 @@ def test_run_book_flatten_maps_exit_4_and_never_passes_live(monkeypatch, tmp_pat
     assert cmd[cmd.index("--book") + 1] == BOOK_ORB_MOOMOO
     assert FLATTEN_MOOMOO in cmd[1]
     assert FLATTEN_TRADIER not in " ".join(cmd)
-    assert "--trd-env" not in cmd
+    assert "--trd-env" in cmd
+    assert cmd[cmd.index("--trd-env") + 1] == "SIMULATE"
     assert "--env" not in cmd
     assert "REAL" not in cmd
     assert "live" not in cmd
@@ -168,6 +183,9 @@ def test_run_book_flatten_tradier_book_never_calls_moomoo(monkeypatch, tmp_path)
     assert cmd[cmd.index("--book") + 1] == BOOK_ORB_TRADIER
     assert FLATTEN_TRADIER in cmd[1]
     assert FLATTEN_MOOMOO not in " ".join(cmd)
+    assert "--trd-env" not in cmd
+    assert "SIMULATE" not in cmd
+    assert "REAL" not in cmd
 
 
 def test_installer_dry_run_prints_four_labels_and_book_argv():
@@ -190,6 +208,10 @@ def test_installer_dry_run_prints_four_labels_and_book_argv():
         assert label in out
         assert f"--book {spec.book_id}" in out
         assert f"com.claytonorb.paper.flatten.{spec.book_id}" in out
+        if spec.broker == BROKER_MOOMOO:
+            assert f"--trd-env SIMULATE" in out
+    assert "--trd-env REAL" not in out
+    assert "FABIO_ALLOW_REAL_TRADING" not in out
 
 
 def test_print_schedule_bash_is_exactly_four_job_rows(capsys):
@@ -225,6 +247,26 @@ def test_mr_moomoo_argv_does_not_target_orb_moomoo():
     argv = paper_flatten_argv(BOOK_MR_MOOMOO)
     assert argv[argv.index("--book") + 1] == BOOK_MR_MOOMOO
     assert BOOK_ORB_MOOMOO not in argv
+
+
+def test_scheduled_moomoo_argv_pins_simulate_never_real():
+    """Captain B: scheduled Moomoo jobs pin SIMULATE so MOOMOO_TRADE_ENV=REAL still papers."""
+    for book_id in (BOOK_ORB_MOOMOO, BOOK_MR_MOOMOO):
+        argv = paper_flatten_argv(book_id)
+        assert argv[argv.index("--book") + 1] == book_id
+        assert "--trd-env" in argv
+        assert argv[argv.index("--trd-env") + 1] == "SIMULATE"
+        assert argv.count("SIMULATE") == 1
+        assert "REAL" not in argv
+        assert "--env" not in argv
+        assert "live" not in argv
+        assert "FABIO_ALLOW_REAL_TRADING" not in argv
+        assert FLATTEN_TRADIER not in " ".join(argv)
+    for book_id in (BOOK_ORB_TRADIER, BOOK_MR_TRADIER):
+        argv = paper_flatten_argv(book_id)
+        assert "--trd-env" not in argv
+        assert "SIMULATE" not in argv
+        assert "REAL" not in argv
 
 
 def test_moomoo_empty_ledger_without_dry_run_no_place_order(monkeypatch, tmp_path):

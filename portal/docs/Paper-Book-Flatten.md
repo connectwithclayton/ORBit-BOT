@@ -27,7 +27,9 @@ launchctl list | grep claytonorb.paper.flatten
 
 Moomoo jobs are staggered first so two OpenD `position_list_query` / `place_order` runs are not in the same minute. Tradier follows.
 
-Wrappers: [`portal/run_paper_flatten_book.sh`](../run_paper_flatten_book.sh). **`--book` is required** on the launchd argv. Inner Python argv is built by [`fabio_live.paper_flatten_jobs`](../../backend/fabio_live/paper_flatten_jobs.py) and always includes `--book <id> --require-after-et --scope options --log-format jsonl`. Wrappers do **not** pass `--trd-env REAL`, `--env live`, or `FABIO_ALLOW_REAL_TRADING`.
+**Early-close (Slice 1 accepted gap — follow-up):** launchd uses **fixed** 15:50–15:56 ET weekday clocks, not `session_close_et` minus 10 minutes. On a 13:00 early close the fail-safe *window* is already ~12:50; these jobs still fire at 15:50–15:56 (after the session). `--require-after-et` allows that late run. Do **not** expect Slice 1 to move launchd minutes with the calendar. Session_close-relative / calendar-aware fire times are a follow-up.
+
+Wrappers: [`portal/run_paper_flatten_book.sh`](../run_paper_flatten_book.sh). **`--book` is required** on the launchd argv. Inner Python argv is built by [`fabio_live.paper_flatten_jobs`](../../backend/fabio_live/paper_flatten_jobs.py) and always includes `--book <id> --require-after-et --scope options --log-format jsonl`. **Moomoo** jobs also pin `--trd-env SIMULATE` so a host with `MOOMOO_TRADE_ENV=REAL` still paper-flattens instead of refusing. Wrappers do **not** pass `--trd-env REAL`, `--env live`, or `FABIO_ALLOW_REAL_TRADING`.
 
 Uninstall:
 
@@ -79,7 +81,7 @@ On a **paper** session, with OpenD / Tradier sandbox as needed:
 Dry-run without placing:
 
 ```bash
-PYTHONPATH=backend:frontend python3 backend/moomoo_eod_failsafe.py --dry-run --book orb-moomoo --require-after-et --scope options --log-format jsonl
+PYTHONPATH=backend:frontend python3 backend/moomoo_eod_failsafe.py --dry-run --book orb-moomoo --require-after-et --scope options --log-format jsonl --trd-env SIMULATE
 PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --dry-run --book orb-tradier --require-after-et --scope options --log-format jsonl
 ```
 
