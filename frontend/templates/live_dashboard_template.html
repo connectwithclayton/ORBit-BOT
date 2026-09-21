@@ -203,6 +203,17 @@ header {
   color: #ffd740;
   border-color: rgba(255, 215, 64, 0.35);
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .header-btn {
   display: inline-block; padding: 2px 9px; border-radius: 4px;
   font-size: 11px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase;
@@ -510,6 +521,80 @@ a.header-btn:visited { color: var(--blue); }
 .kpi-grid.kpi-expanded .kpi-secondary { display: block; }
 .kpi-grid.kpi-expanded .kpi-more-btn .kpi-more-closed { display: none; }
 .kpi-grid:not(.kpi-expanded) .kpi-more-btn .kpi-more-open { display: none; }
+
+/* ── Four paper-book cards (always rendered, including unbound) ── */
+.book-cards { margin: 0 0 24px; }
+.book-cards-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px;
+  margin-bottom: 12px;
+}
+.book-cards-head h3 {
+  font-size: 13px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.book-cards-head p { font-size: 12px; color: var(--muted); margin: 0; }
+.book-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.book-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 16px 14px;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  width: 100%;
+  display: block;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.book-card:hover { border-color: #3a3a3a; transform: translateY(-1px); }
+.book-card.is-active { border-color: rgba(79,195,247,0.55); }
+.book-card.is-unbound { opacity: 0.82; }
+@media (prefers-reduced-motion: reduce) {
+  .book-card, .book-card:hover { transition: none; transform: none; }
+}
+.book-card-id {
+  font-size: 15px; font-weight: 700; letter-spacing: -0.2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.book-card-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.book-card-bind {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--yellow);
+  line-height: 1.35;
+}
+.book-card.is-bound .book-card-bind { color: var(--green); }
+.book-card-equity {
+  margin-top: 12px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.book-card-equity .eq-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.book-card-row {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.book-card-row strong { color: var(--text); font-weight: 600; }
+.book-card-halt { color: var(--red); font-weight: 700; }
+.open-book-filter-wrap { margin-left: auto; }
+#openBookFilter { min-width: 160px; }
 
 /* Mobile hero + section jump nav */
 .desk-hero {
@@ -1044,6 +1129,9 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
   background: linear-gradient(90deg, rgba(255,82,82,0.25), rgba(255,82,82,0.85));
 }
 
+@media (max-width: 1100px) {
+  .book-card-grid { grid-template-columns: repeat(2, 1fr); }
+}
 @media (max-width: 900px) {
   .kpi-grid { grid-template-columns: repeat(3, 1fr); }
   .charts-row.row-2-1 { grid-template-columns: 1fr; }
@@ -1082,12 +1170,14 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
     padding-right: max(14px, env(safe-area-inset-right));
   }
   .desk-file-banner { order: 1; }
-  #sectionOverview { order: 4; }
-  #sectionPositions { order: 5; }
-  #sectionCalendar { order: 6; }
-  #allTradesCard { order: 7; }
-  #tradingViewPanel { order: 8; }
-  #performanceAnalyticsPanel { order: 9; }
+  #sectionBooks { order: 4; }
+  #sectionOverview { order: 5; }
+  #sectionPositions { order: 6; }
+  #sectionCalendar { order: 7; }
+  #allTradesCard { order: 8; }
+  #tradingViewPanel { order: 9; }
+  #performanceAnalyticsPanel { order: 10; }
+  .book-card-grid { grid-template-columns: 1fr; }
   .page {
     padding: 16px max(14px, env(safe-area-inset-left)) 0 max(14px, env(safe-area-inset-right));
   }
@@ -1186,12 +1276,13 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
   .filters-drawer .filters { display: flex !important; }
   .tv-panel-head { display: none !important; }
   .trading-view-panel.tv-collapsed .tv-body { display: block !important; }
-  #sectionOverview { order: 1; }
-  #sectionPositions { order: 2; }
-  #sectionCalendar { order: 3; }
-  #allTradesCard { order: 4; }
-  #tradingViewPanel { order: 5; }
-  #performanceAnalyticsPanel { order: 6; }
+  #sectionBooks { order: 1; }
+  #sectionOverview { order: 2; }
+  #sectionPositions { order: 3; }
+  #sectionCalendar { order: 4; }
+  #allTradesCard { order: 5; }
+  #tradingViewPanel { order: 6; }
+  #performanceAnalyticsPanel { order: 7; }
   .kpi-grid {
     gap: 12px;
     margin-top: 8px;
@@ -1989,8 +2080,8 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
       __STORY_LINK_HTML__
     </div>
     <div class="header-sub" style="margin-top:4px">
-      <span class="header-sub-full">SPY · QQQ · NVDA &nbsp;|&nbsp; 0-1DTE Options &nbsp;|&nbsp; ORB Strategy &nbsp;|&nbsp; Initial Capital $10,000</span>
-      <span class="header-sub-short">SPY · QQQ · NVDA · 0-1DTE ORB · $10k paper</span>
+      <span class="header-sub-full">SPY · QQQ · NVDA · 0-1DTE Options · Four paper books · $10k each · paper only</span>
+      <span class="header-sub-short">Four paper books · $10k each · paper only</span>
     </div>
   </div>
     <div class="header-right">
@@ -2045,6 +2136,7 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
   </div>
 
   <nav class="desk-jump-nav" id="deskJumpNav" aria-label="Jump to section">
+    <a class="desk-jump-link" href="#sectionBooks">Books</a>
     <a class="desk-jump-link" href="#sectionOverview">Stats</a>
     <a class="desk-jump-link" href="#sectionPositions">Open</a>
     <a class="desk-jump-link" href="#sectionCalendar">Calendar</a>
@@ -2052,6 +2144,55 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
     <a class="desk-jump-link" href="#tradingViewPanel">Chart</a>
     <a class="desk-jump-link" href="#performanceAnalyticsPanel">Analytics</a>
   </nav>
+
+  <section class="book-cards desk-section" id="sectionBooks" role="region" aria-label="Four paper books">
+    <div class="book-cards-head">
+      <h3>Paper books</h3>
+      <p>Modeled equity = that book&apos;s CB $10k start + realized. Not OpenD NAV. Unbound books stay labeled — not $0 / 0 trades / healthy.</p>
+    </div>
+    <div class="book-card-grid" id="bookCardGrid">
+      <button type="button" class="book-card" data-book-id="orb-moomoo" id="bookCard-orb-moomoo">
+        <div class="book-card-id">orb-moomoo</div>
+        <div class="book-card-meta"><span data-role="broker">moomoo</span> · <span data-role="strategy">orb</span></div>
+        <div class="book-card-bind" data-role="bind">—</div>
+        <div class="book-card-equity" data-role="equity">—</div>
+        <div class="book-card-row" data-role="cb">—</div>
+        <div class="book-card-row" data-role="ledger">—</div>
+        <div class="book-card-row" data-role="flatten">—</div>
+        <div class="book-card-row" data-role="health">—</div>
+      </button>
+      <button type="button" class="book-card" data-book-id="orb-tradier" id="bookCard-orb-tradier">
+        <div class="book-card-id">orb-tradier</div>
+        <div class="book-card-meta"><span data-role="broker">tradier</span> · <span data-role="strategy">orb</span></div>
+        <div class="book-card-bind" data-role="bind">—</div>
+        <div class="book-card-equity" data-role="equity">—</div>
+        <div class="book-card-row" data-role="cb">—</div>
+        <div class="book-card-row" data-role="ledger">—</div>
+        <div class="book-card-row" data-role="flatten">—</div>
+        <div class="book-card-row" data-role="health">—</div>
+      </button>
+      <button type="button" class="book-card" data-book-id="mr-moomoo" id="bookCard-mr-moomoo">
+        <div class="book-card-id">mr-moomoo</div>
+        <div class="book-card-meta"><span data-role="broker">moomoo</span> · <span data-role="strategy">mr</span></div>
+        <div class="book-card-bind" data-role="bind">—</div>
+        <div class="book-card-equity" data-role="equity">—</div>
+        <div class="book-card-row" data-role="cb">—</div>
+        <div class="book-card-row" data-role="ledger">—</div>
+        <div class="book-card-row" data-role="flatten">—</div>
+        <div class="book-card-row" data-role="health">—</div>
+      </button>
+      <button type="button" class="book-card" data-book-id="mr-tradier" id="bookCard-mr-tradier">
+        <div class="book-card-id">mr-tradier</div>
+        <div class="book-card-meta"><span data-role="broker">tradier</span> · <span data-role="strategy">mr</span></div>
+        <div class="book-card-bind" data-role="bind">—</div>
+        <div class="book-card-equity" data-role="equity">—</div>
+        <div class="book-card-row" data-role="cb">—</div>
+        <div class="book-card-row" data-role="ledger">—</div>
+        <div class="book-card-row" data-role="flatten">—</div>
+        <div class="book-card-row" data-role="health">—</div>
+      </button>
+    </div>
+  </section>
 
   <!-- KPI Cards -->
   <div class="kpi-grid desk-section" id="sectionOverview" role="region" aria-label="Key stats">
@@ -2148,14 +2289,25 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
   <div class="table-card desk-section" id="sectionPositions">
     <div class="table-header">
       <h3>Open positions <span class="row-count" id="openRowCount"></span></h3>
+      <div class="open-book-filter-wrap">
+        <label class="sr-only" for="openBookFilter">Filter by book</label>
+        <select class="filter-select" id="openBookFilter" onchange="renderOpenPositions()" title="Filter by paper book">
+          <option value="">All books</option>
+          <option value="orb-moomoo">orb-moomoo</option>
+          <option value="orb-tradier">orb-tradier</option>
+          <option value="mr-moomoo">mr-moomoo</option>
+          <option value="mr-tradier">mr-tradier</option>
+        </select>
+      </div>
     </div>
-    <p class="section-caption">Current exposure first — flat when the bot has no entries open.</p>
+    <p class="section-caption">Book comes from notes/source. Tradier filters never include Moomoo <code>broker code=</code> rows.</p>
     <div class="table-scroll">
       <table id="openPositionsTable">
         <thead>
           <tr>
             <th>Date</th>
             <th>Symbol</th>
+            <th>Book</th>
             <th>Dir</th>
             <th>Entry</th>
             <th>Entry $</th>
@@ -2484,6 +2636,189 @@ const REASON_LABELS = DATA.reason_labels || {};
 const CAL_CTX = DATA.calendar || {};
 const NYSE_CAL = CAL_CTX.nyse_calendar || {};
 
+var FOUR_BOOK_IDS = ['orb-moomoo', 'orb-tradier', 'mr-moomoo', 'mr-tradier'];
+var BOOK_IDENTITY = {
+  'orb-moomoo': { broker: 'moomoo', strategy: 'orb', source: 'moomoo_paper', fifo: 'moomoo_paper_fifo' },
+  'orb-tradier': { broker: 'tradier', strategy: 'orb', source: 'tradier_paper', fifo: 'tradier_paper_fifo' },
+  'mr-moomoo': { broker: 'moomoo', strategy: 'mr', source: 'mr', fifo: 'mr_paper_fifo' },
+  'mr-tradier': { broker: 'tradier', strategy: 'mr', source: 'mr_tradier', fifo: 'mr_tradier_paper_fifo' }
+};
+var SOURCE_TO_BOOK = {
+  moomoo_paper: 'orb-moomoo',
+  tradier_paper: 'orb-tradier',
+  mr: 'mr-moomoo',
+  mr_tradier: 'mr-tradier'
+};
+var FIFO_TO_BOOK = {
+  moomoo_paper_fifo: 'orb-moomoo',
+  tradier_paper_fifo: 'orb-tradier',
+  mr_paper_fifo: 'mr-moomoo',
+  mr_tradier_paper_fifo: 'mr-tradier'
+};
+var CB_DAILY_LOSS_PCT = 0.02;
+var CB_MAX_TRADES = 3;
+var UNBOUND_STATUS = 'not enabled / not bound this boot';
+
+function bookIdFromOpenRow(row) {
+  if (!row) return '';
+  var notes = String(row.notes || '').trim();
+  var notesL = notes.toLowerCase();
+  var source = String(row.source || '').trim().toLowerCase();
+  var explicit = String(row.book || '').trim().toLowerCase();
+  if (FOUR_BOOK_IDS.indexOf(explicit) >= 0) {
+    if (notes.indexOf('broker code=') === 0 && BOOK_IDENTITY[explicit] && BOOK_IDENTITY[explicit].broker === 'tradier') {
+      return 'orb-moomoo';
+    }
+    return explicit;
+  }
+  if (notesL.indexOf('source=') === 0) {
+    var token = notesL.split('|')[0].slice('source='.length).trim();
+    if (SOURCE_TO_BOOK[token]) return SOURCE_TO_BOOK[token];
+  }
+  if (FIFO_TO_BOOK[notes] || FIFO_TO_BOOK[notesL]) return FIFO_TO_BOOK[notes] || FIFO_TO_BOOK[notesL];
+  if (SOURCE_TO_BOOK[source]) return SOURCE_TO_BOOK[source];
+  if (notes.indexOf('broker code=') === 0) return 'orb-moomoo';
+  return '';
+}
+
+function isMoomooBrokerCodeRow(row) {
+  return String(row && row.notes || '').trim().indexOf('broker code=') === 0;
+}
+
+function filterOpenPositionsByBook(rows, bookId) {
+  var list = rows || [];
+  var wanted = String(bookId || '').trim().toLowerCase();
+  if (!wanted) return list.slice();
+  var ident = BOOK_IDENTITY[wanted] || {};
+  return list.filter(function (row) {
+    if (bookIdFromOpenRow(row) !== wanted) return false;
+    if (ident.broker === 'tradier' && isMoomooBrokerCodeRow(row)) return false;
+    return true;
+  });
+}
+
+function bindingStatusLabel(enabled, bound) {
+  if (enabled && bound) return 'enabled · bound';
+  if (enabled && !bound) return 'enabled · not bound this boot';
+  if (!enabled && bound) return 'not enabled · bound this boot';
+  return UNBOUND_STATUS;
+}
+
+function cbHaltedFromRow(row) {
+  if (!row || !row.bound) return null;
+  var cb = row.cb || {};
+  var loss = Number(cb.daily_loss_pct || 0);
+  var tradesN = Number(cb.trade_count || 0);
+  if (loss <= -CB_DAILY_LOSS_PCT) return true;
+  if (tradesN >= CB_MAX_TRADES) return true;
+  return false;
+}
+
+function fmtUsd(n) {
+  var v = Number(n);
+  if (!isFinite(v)) return '—';
+  return '$' + v.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function fmtHealthTs(ts) {
+  if (!ts) return 'no health snapshot';
+  return String(ts);
+}
+
+function fmtLastFlatten(lf) {
+  if (!lf) return 'last flatten: none';
+  var when = lf.finished_at_utc || lf.started_at_utc || '';
+  var reason = lf.reason || '—';
+  var dry = lf.dry_run ? ' · dry-run' : '';
+  return 'last flatten: ' + (when || '—') + ' · ' + reason + dry;
+}
+
+function decorateBookRow(bookId, raw, healthTs) {
+  var ident = BOOK_IDENTITY[bookId] || {};
+  var row = raw && typeof raw === 'object' ? raw : {};
+  var enabled = !!row.enabled;
+  var bound = !!row.bound;
+  var cb = row.cb && typeof row.cb === 'object' ? row.cb : {};
+  var ledger = row.ledger && typeof row.ledger === 'object' ? row.ledger : {};
+  var halted = (row.cb_halted !== undefined) ? row.cb_halted : cbHaltedFromRow({ bound: bound, cb: cb });
+  var live = (row.live_metrics !== undefined) ? !!row.live_metrics : bound;
+  var status = row.binding_status || bindingStatusLabel(enabled, bound);
+  return {
+    book_id: bookId,
+    enabled: enabled,
+    bound: bound,
+    broker: row.broker || ident.broker || '—',
+    strategy: row.strategy || ident.strategy || '—',
+    source: row.source || ident.source || '',
+    cb: cb,
+    ledger: ledger,
+    modeled_equity: row.modeled_equity,
+    modeled_equity_display: live ? (row.modeled_equity_display != null ? row.modeled_equity_display : row.modeled_equity) : null,
+    last_flatten: row.last_flatten || null,
+    health_ts: row.health_ts || healthTs || null,
+    binding_status: status,
+    live_metrics: live,
+    cb_halted: live ? halted : null
+  };
+}
+
+function renderPaperBookCards(booksMap, healthTs) {
+  var books = booksMap || DATA.books || {};
+  var ts = healthTs || DATA.health_ts || null;
+  FOUR_BOOK_IDS.forEach(function (id) {
+    var el = document.getElementById('bookCard-' + id);
+    if (!el) return;
+    var row = decorateBookRow(id, books[id], ts);
+    el.classList.toggle('is-unbound', !row.bound);
+    el.classList.toggle('is-bound', !!row.bound);
+    var brokerEl = el.querySelector('[data-role="broker"]');
+    var stratEl = el.querySelector('[data-role="strategy"]');
+    var bindEl = el.querySelector('[data-role="bind"]');
+    var eqEl = el.querySelector('[data-role="equity"]');
+    var cbEl = el.querySelector('[data-role="cb"]');
+    var ledEl = el.querySelector('[data-role="ledger"]');
+    var flatEl = el.querySelector('[data-role="flatten"]');
+    var healthEl = el.querySelector('[data-role="health"]');
+    if (brokerEl) brokerEl.textContent = row.broker;
+    if (stratEl) stratEl.textContent = row.strategy;
+    if (bindEl) bindEl.textContent = row.binding_status;
+    if (eqEl) {
+      if (row.live_metrics && row.modeled_equity_display != null) {
+        eqEl.innerHTML = '<span class="eq-label">Modeled equity (CB $10k + realized)</span>' + fmtUsd(row.modeled_equity_display);
+      } else {
+        eqEl.innerHTML = '<span class="eq-label">Modeled equity</span>—';
+      }
+    }
+    if (cbEl) {
+      if (!row.live_metrics) {
+        cbEl.textContent = row.binding_status;
+      } else {
+        var cb = row.cb || {};
+        var haltTxt = row.cb_halted ? '<span class="book-card-halt">HALT</span>' : 'active';
+        var lossPct = (Number(cb.daily_loss_pct || 0) * 100).toFixed(2) + '%';
+        cbEl.innerHTML = 'CB ' + haltTxt + ' · loss ' + lossPct +
+          ' · <strong>' + String(cb.trade_count || 0) + ' trades</strong> · streak ' + String(cb.loss_streak || 0);
+      }
+    }
+    if (ledEl) {
+      var nCodes = (row.ledger && row.ledger.code_count != null) ? row.ledger.code_count : 0;
+      ledEl.innerHTML = 'ledger <strong>' + String(nCodes) + '</strong> codes';
+    }
+    if (flatEl) flatEl.textContent = fmtLastFlatten(row.last_flatten);
+    if (healthEl) healthEl.textContent = 'health ' + fmtHealthTs(row.health_ts);
+  });
+}
+
+function applyBooksFromLiveStatus(st) {
+  if (!st) {
+    renderPaperBookCards(DATA.books, DATA.health_ts);
+    return;
+  }
+  var books = st.books || (st.health && st.health.books) || DATA.books;
+  var ts = st.health_ts || (st.health && st.health.ts) || DATA.health_ts;
+  renderPaperBookCards(books, ts);
+}
+
 var STATUS_STALE_SEC = 120;
 var STATUS_DEAD_SEC = 900;
 
@@ -2569,6 +2904,7 @@ function applyBotStatus(st, options) {
   if (!canPollLive) {
     if (deskBanner) deskBanner.classList.add('visible');
     applyBotStatus(DATA.bot_status || { running: false }, { fromPoll: false });
+    applyBooksFromLiveStatus(DATA);
     return;
   }
 
@@ -2576,11 +2912,17 @@ function applyBotStatus(st, options) {
     fetch(STATUS_URL + '?t=' + Date.now(), { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) {
-        if (j) applyBotStatus(j, { fromPoll: true });
-        else applyBotStatus({ running: false }, { fromPoll: true });
+        if (j) {
+          applyBotStatus(j, { fromPoll: true });
+          applyBooksFromLiveStatus(j);
+        } else {
+          applyBotStatus({ running: false }, { fromPoll: true });
+          applyBooksFromLiveStatus(DATA);
+        }
       })
       .catch(function () {
         applyBotStatus({ running: false }, { fromPoll: true });
+        applyBooksFromLiveStatus(DATA);
       });
   }
 
@@ -4215,10 +4557,13 @@ function initAnalyticsCharts() {
 let _sortCol = 'date', _sortAsc = false;
 
 function renderOpenPositions() {
-  const filtered = (openPositions || []).filter(function (p) {
+  const bookFilterEl = document.getElementById('openBookFilter');
+  const bookFilter = bookFilterEl ? String(bookFilterEl.value || '') : '';
+  const qtyOk = (openPositions || []).filter(function (p) {
     const qty = Number(p && p.contracts != null ? p.contracts : 0);
     return qty > 0;
   });
+  const filtered = filterOpenPositionsByBook(qtyOk, bookFilter);
   const rows = filtered.slice().sort((a, b) => {
     const da = String(a.date || '');
     const db = String(b.date || '');
@@ -4227,16 +4572,21 @@ function renderOpenPositions() {
   });
   document.getElementById('openRowCount').textContent = '(' + rows.length + ')';
   if (typeof syncDeskHeroOpenCount === 'function') syncDeskHeroOpenCount(rows.length);
+  document.querySelectorAll('.book-card[data-book-id]').forEach(function (card) {
+    card.classList.toggle('is-active', !!bookFilter && card.getAttribute('data-book-id') === bookFilter);
+  });
   const tbody = document.getElementById('openTableBody');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No open positions.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No open positions.</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(t => {
     const dirCls = t.direction === 'CALL' ? 'dir-call' : 'dir-put';
+    const book = bookIdFromOpenRow(t) || '—';
     return `<tr>
       <td data-label="Date">${t.date || '—'}</td>
       <td data-label="Symbol"><strong>${t.symbol || '—'}</strong></td>
+      <td data-label="Book"><code>${book}</code></td>
       <td data-label="Dir"><span class="${dirCls}">${t.direction || '—'}</span></td>
       <td data-label="Entry" style="color:var(--muted)">${t.entry_time || '—'}</td>
       <td data-label="Entry $">$${(t.entry_price||0).toFixed(2)}</td>
@@ -4691,7 +5041,7 @@ function renderTable() {
     });
     if ('IntersectionObserver' in window) {
       var sections = [
-        'sectionOverview', 'sectionPositions', 'sectionCalendar',
+        'sectionBooks', 'sectionOverview', 'sectionPositions', 'sectionCalendar',
         'allTradesCard', 'tradingViewPanel', 'performanceAnalyticsPanel'
       ].map(function (id) { return document.getElementById(id); }).filter(Boolean);
       var obs = new IntersectionObserver(function (entries) {
@@ -4712,6 +5062,21 @@ function renderTable() {
     return Number(p && p.contracts != null ? p.contracts : 0) > 0;
   }).length);
 })();
+
+(function initBookCardClicks() {
+  var grid = document.getElementById('bookCardGrid');
+  var filterEl = document.getElementById('openBookFilter');
+  if (!grid || !filterEl) return;
+  grid.addEventListener('click', function (e) {
+    var card = e.target.closest('.book-card[data-book-id]');
+    if (!card) return;
+    var id = card.getAttribute('data-book-id') || '';
+    filterEl.value = (filterEl.value === id) ? '' : id;
+    renderOpenPositions();
+  });
+})();
+
+renderPaperBookCards(DATA.books, DATA.health_ts);
 
 // Initial render — newest first by default
 renderOpenPositions();
