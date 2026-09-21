@@ -88,10 +88,16 @@ PYTHONPATH=backend:frontend python3 backend/orb_bot_fabio.py
 # Research backtest (CSV/PNG at repo root, or results/research/<run_id>/ if those filenames already exist)
 PYTHONPATH=backend:frontend python3 backend/backtest/Fabio_orb_backtest.py
 
-# Dry-run flatten for one book (never cross-broker)
+# Dry-run flatten for one book (never cross-broker; always pass --book)
 PYTHONPATH=backend:frontend python3 backend/moomoo_eod_failsafe.py --dry-run --book orb-moomoo
 PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --dry-run --book orb-tradier
+
+# Four paper fail-safe launchd jobs (preview labels + --book argv; Mac host TZ = America/New_York)
+# Slice 1: fixed 15:50–15:56 ET clocks. Early-close / calendar-aware fire times are a follow-up.
+PYTHONPATH=backend:frontend bash portal/install_paper_flatten_scheduler.sh --dry-run
 ```
+
+Independent flatten if the desk bot dies before 15:45 ET: [`portal/docs/Paper-Book-Flatten.md`](portal/docs/Paper-Book-Flatten.md). Moomoo scheduled argv pins `--trd-env SIMULATE` (never REAL). Early-close launchd minutes are **not** calendar-aware in this ship.
 
 Shared strategy tunables: [`backend/backtest/fabio/settings.py`](backend/backtest/fabio/settings.py). Integration env (hosts, tokens): [`backend/config.py`](backend/config.py). Paper-book identity: [`backend/fabio_live/paper_books.py`](backend/fabio_live/paper_books.py).
 
@@ -120,5 +126,6 @@ Do not treat this README as the ops dump. Use the tree:
 - System context: [`docs/architecture/architecture-system-context.md`](docs/architecture/architecture-system-context.md)
 - Runtime diagrams: [`portal/docs/ARCHITECTURE.md`](portal/docs/ARCHITECTURE.md)
 - NYSE session / EOD timing: [`portal/docs/EXCHANGE_CALENDAR.md`](portal/docs/EXCHANGE_CALENDAR.md)
+- Four-book paper fail-safe jobs: [`portal/docs/Paper-Book-Flatten.md`](portal/docs/Paper-Book-Flatten.md)
 - Morning audit / reconcile: [`portal/docs/Morning-Audit.md`](portal/docs/Morning-Audit.md), [`portal/docs/audit-runbook.md`](portal/docs/audit-runbook.md)
 - Google Sheets: [`docs/GOOGLE_SETUP.md`](docs/GOOGLE_SETUP.md)
