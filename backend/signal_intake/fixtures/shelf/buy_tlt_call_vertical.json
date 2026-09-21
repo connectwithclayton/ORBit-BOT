@@ -1,0 +1,16 @@
+{
+  "id": "buy_tlt_call_vertical",
+  "kind": "entry_vertical_multi_leg",
+  "subject": "RRP - Buy TLT Call Vertical",
+  "from": "subscription-alerts@marketrebellion.example.invalid",
+  "date": "2026-09-10T19:15:31Z",
+  "body": "Buy TLT Call Vertical\n\nWith bonds tracking at some pretty low levels we'll look to buy the TLT here.\n\nBuy the November 20th TLT $81 Call for $1.74 and sell the November 20th TLT $85 Call for $0.44.\n\nThe TLT is at $80.73.\n",
+  "expected": {
+    "action": "buy",
+    "symbol": "TLT",
+    "structure": "call_vertical",
+    "legs": 2,
+    "skip_reason": "multi_leg"
+  },
+  "channel": "email"
+}

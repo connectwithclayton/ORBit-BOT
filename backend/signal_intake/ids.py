@@ -36,13 +36,37 @@ def make_raw_id(payload: dict[str, Any]) -> str:
 
 
 class IdempotencyStore:
-    """In-memory seen-set so the same raw_id is processed once per replay."""
+    """In-memory seen-set so the same raw_id is processed once per replay.
+
+    ``_contracts`` dedupes Buy vs Trade Log on symbol+expiry+strike+right.
+    Lock-in / exit intents do not consume this set.
+    """
 
     def __init__(self) -> None:
         self._seen: set[str] = set()
+        self._contracts: set[str] = set()
 
     def seen_or_add(self, raw_id: str) -> bool:
         if raw_id in self._seen:
             return True
         self._seen.add(raw_id)
         return False
+
+    def seen_contract_or_add(self, contract_key: str) -> bool:
+        if not contract_key:
+            return False
+        if contract_key in self._contracts:
+            return True
+        self._contracts.add(contract_key)
+        return False
+
+    def to_durable_dict(self) -> dict[str, Any]:
+        return {
+            "seen": sorted(self._seen),
+            "contracts": sorted(self._contracts),
+        }
+
+    def load_durable_dict(self, payload: dict[str, Any] | None) -> None:
+        data = payload or {}
+        self._seen = {str(x) for x in (data.get("seen") or [])}
+        self._contracts = {str(x) for x in (data.get("contracts") or [])}

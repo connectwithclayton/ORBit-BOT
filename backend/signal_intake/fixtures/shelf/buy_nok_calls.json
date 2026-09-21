@@ -1,0 +1,19 @@
+{
+  "id": "buy_nok_calls",
+  "kind": "entry_single_call",
+  "subject": "RRP - Buy NOK Calls",
+  "from": "subscription-alerts@marketrebellion.example.invalid",
+  "date": "2026-09-16T14:45:01Z",
+  "body": "Buy NOK Calls\n\nAs discussed yesterday on the call, we like Nokia (NOK) Calls. Plus it has a $15 target from a sellside firm established recently.\n\nWhy?\n\n1.Erlanger Put/Call 10 Day is elevated which we like for a long.\n\n2.Erlanger Voulme Swing is positive.\n\nWhen this stock gets hot, watch out.\n\nBuy the NOK October 16 $10 Call for $0.79.\n",
+  "expected": {
+    "action": "buy",
+    "symbol": "NOK",
+    "right": "CALL",
+    "expiry": "2026-10-16",
+    "strike": 10,
+    "premium": 0.79,
+    "structure": "single",
+    "legs": 1
+  },
+  "channel": "email"
+}

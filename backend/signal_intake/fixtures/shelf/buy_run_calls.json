@@ -1,0 +1,19 @@
+{
+  "id": "buy_run_calls",
+  "kind": "entry_single_call",
+  "subject": "RRP - BUY RUN 16October 9 Calls",
+  "from": "subscription-alerts@marketrebellion.example.invalid",
+  "date": "2026-09-10T15:49:37Z",
+  "body": "BUY RUN 16October 9 Calls\n\nThere has been repeated UOA in RUN for a week now.\n\nBuy the October 16th RUN $9 Call for $0.64.\n\nRUN is at $8.59 .\n",
+  "expected": {
+    "action": "buy",
+    "symbol": "RUN",
+    "right": "CALL",
+    "expiry": "2026-10-16",
+    "strike": 9,
+    "premium": 0.64,
+    "structure": "single",
+    "legs": 1
+  },
+  "channel": "email"
+}

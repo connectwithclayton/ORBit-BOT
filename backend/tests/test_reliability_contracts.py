@@ -200,7 +200,9 @@ def test_startup_reconcile_auto_adopts_valid_positions(monkeypatch):
     assert bot._startup_unreconciled_positions == []
     assert "SPY" in bot.order_mgr.positions
     assert bot.signals["SPY"] == "CALL"
+    assert "SPY" in bot.exit_tfs
     assert bot.order_mgr.positions["SPY"]["entry_option_price"] == 1.25
+    assert bot.order_mgr.positions["SPY"].get("source") != "mr"
 
 
 def test_startup_reconcile_partial_adoption_keeps_running(monkeypatch):

@@ -153,6 +153,17 @@ def main() -> None:
         f"(paper/sandbox default; live needs {ALLOW_REAL_ENV}=1). "
         "Does not reuse MOOMOO_TRADE_ENV."
     )
+    mr_on = os.getenv("FABIO_MR_PAPER_ENABLED", "").strip() == "1"
+    mr_allow_orb = os.getenv("FABIO_MR_ALLOW_ORB_SYMBOLS", "").strip() == "1"
+    print(
+        f"- MR paper auto-trade: {'ON' if mr_on else 'OFF'} "
+        "(FABIO_MR_PAPER_ENABLED; default off — ORB loop unchanged). "
+        "Moomoo SIMULATE OrderManager only; does not enable Tradier dual books. "
+        "Hard isolate: source=mr lock-ins only; refuse occupied underlyings; "
+        "JSONL cursor beside FABIO_MR_QUEUE_PATH; "
+        f"ORB-symbol entries {'allowed' if mr_allow_orb else 'denied'} "
+        "(FABIO_MR_ALLOW_ORB_SYMBOLS)."
+    )
 
 
 if __name__ == "__main__":
