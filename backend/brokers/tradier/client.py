@@ -283,10 +283,22 @@ class TradierPaperClient:
         dry_run: bool = False,
         sleep_fn=None,
         sleep_between_orders: float = 0.0,
+        only_symbols: Any | None = None,
+        exclude_symbols: Any | None = None,
     ) -> dict[str, Any]:
-        """Market-flatten open rows. Options-only by default. Never exercises."""
+        """Market-flatten open rows. Options-only by default. Never exercises.
+
+        ``only_symbols`` / ``exclude_symbols`` scope a single paper book so
+        ORB-Tradier flatten cannot close MR-Tradier (and vice versa).
+        """
         if scope not in ("options", "all"):
             raise ValueError("scope must be 'options' or 'all'")
+        only = None
+        if only_symbols is not None:
+            only = {str(s).strip().upper() for s in only_symbols if str(s).strip()}
+        exclude = {
+            str(s).strip().upper() for s in (exclude_symbols or []) if str(s).strip()
+        }
         positions = self.list_positions()
         planned: list[dict[str, Any]] = []
         for row in positions:
@@ -298,6 +310,10 @@ class TradierPaperClient:
             if qty == 0 or not symbol:
                 continue
             if scope == "options" and not looks_like_occ_option(symbol):
+                continue
+            if only is not None and symbol not in only:
+                continue
+            if symbol in exclude:
                 continue
             side = closing_side(symbol, qty)
             planned.append(

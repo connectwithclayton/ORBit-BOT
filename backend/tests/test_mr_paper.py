@@ -420,17 +420,23 @@ def test_default_bot_signal_loop_skips_mr_when_flag_off():
     bot._drain_mr_paper(allow_entries=True)
 
 
-def test_no_tradier_dual_books_in_mr_paper():
+def test_four_paper_books_isolated_not_shared_om():
+    """Slice 5: four books exist; MR module still does not import Tradier HTTP."""
     src = (BACKEND_ROOT / "fabio_live" / "mr_paper.py").read_text()
     bot_src = (BACKEND_ROOT / "fabio_live" / "bot.py").read_text()
-    for blob in (src, bot_src):
-        assert "import tradier" not in blob
-        assert "from tradier" not in blob
-        assert "brokers.tradier" not in blob
-        assert "isolated_place_order_client" not in blob
-        assert "TradierPaperClient" not in blob
+    assert "import tradier" not in src
+    assert "from tradier" not in src
+    assert "brokers.tradier" not in src
+    assert "TradierPaperClient" not in src
+    assert "TradierPaperClient" not in bot_src
+    assert "isolated_place_order_client" not in bot_src
     assert "FABIO_BROKER" not in src
     assert "FABIO_BROKER" not in bot_src
+    from fabio_live.paper_books import ALL_PAPER_BOOKS, PAPER_BOOK_STARTING_BALANCE
+
+    ids = {b.book_id for b in ALL_PAPER_BOOKS}
+    assert ids == {"orb-moomoo", "orb-tradier", "mr-moomoo", "mr-tradier"}
+    assert {b.starting_balance for b in ALL_PAPER_BOOKS} == {PAPER_BOOK_STARTING_BALANCE}
 
 
 def test_real_trd_env_refused(monkeypatch):

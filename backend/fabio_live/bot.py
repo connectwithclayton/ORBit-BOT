@@ -39,7 +39,6 @@ from fabio_live.constants import (
     HEALTH_SNAPSHOT_RETENTION_DAYS,
     MAIN_LOOP_SLEEP_ACTIVE_SEC,
     MARKET_TIMEZONE,
-    MR_CB_PARTITION,
     MR_PAPER_ENABLED,
     OPS_ALERT_COOLDOWN_SEC,
     OPS_DASHBOARD_OPEN_REFRESH_THROTTLE_SEC,
@@ -63,6 +62,16 @@ from fabio_live.market_data import (
     get_vix,
 )
 from fabio_live.orders import OrderManager
+from fabio_live.paper_books import (
+    BOOK_MR_MOOMOO,
+    BOOK_ORB_MOOMOO,
+    PAPER_BOOK_STARTING_BALANCE,
+    PaperBookRegistry,
+    make_mr_executor_for_book,
+    mirror_orb_fill_to_tradier_book,
+    new_isolated_circuit,
+    try_bind_tradier_books,
+)
 from fabio_live.regime import MarketRegime
 from fabio_live.signals import SignalEngine
 from fabio_live.us_equity_calendar import get_session_schedule_for_now_et
@@ -197,19 +206,26 @@ class ORBBot:
         self.trd_env = trd_env
         self.order_mgr = OrderManager(self.trade_ctx, self.quote_ctx, trd_env)
         self.cb = RiskCircuitBreaker()
+        self._paper_books = PaperBookRegistry()
+        self._paper_books.bind(
+            BOOK_ORB_MOOMOO, order_mgr=self.order_mgr, cb=self.cb
+        )
         self._mr_executor = None
+        self._mr_executors: list = []
         self._mr_queue: list[dict] = []
         self._mr_queue_offset = 0
         self._mr_store = None
         self._mr_cursor = None
-        if MR_PAPER_ENABLED:
-            self._init_mr_paper_executor()
         self.regimes = {}
         self.signals = {}
         self.exit_tfs = {}
         self.sheets = SheetsLogger()
         self.dashboard = DashboardWriter()
         self.ops = AsyncOpsWorker(self.sheets, self.dashboard)
+        if MR_PAPER_ENABLED:
+            self._setup_mr_paper_books()
+        else:
+            try_bind_tradier_books(self._paper_books, mr_paper=False)
         self._trades_today = []
         self._trade_entries = {}
         self._capital_at_open = 0.0
@@ -508,7 +524,13 @@ class ORBBot:
                 rec["strike"] = strike
             if expiry:
                 rec["expiry"] = expiry
-            self.order_mgr.positions[symbol] = rec
+            dest = self.order_mgr
+            mr_ex = getattr(self, "_mr_executor", None)
+            if mr_ex is not None and getattr(mr_ex, "order_mgr", None) is not None:
+                dest = mr_ex.order_mgr
+            dest.positions[symbol] = rec
+            if mr_ex is not None and hasattr(mr_ex, "_owned"):
+                mr_ex._owned.add(symbol)
             return True, f"{symbol} {direction} x{qty} adopted source=mr"
 
         self.order_mgr.positions[symbol] = rec
@@ -1089,10 +1111,12 @@ class ORBBot:
         self.cb.set_portfolio_open(portfolio_val)
         self._capital_at_open = portfolio_val
         self._hydrate_circuit_from_sheets_today()
-        mr_ex = getattr(self, "_mr_executor", None)
-        if mr_ex is not None and mr_ex.cb is not self.cb:
-            # Partitioned MR CB is not hydrated from Sheets across restart.
-            mr_ex.cb.set_portfolio_open(portfolio_val)
+        books = getattr(self, "_paper_books", None)
+        if books is not None:
+            for rt in books.all_runtimes():
+                if rt.spec.book_id == BOOK_ORB_MOOMOO:
+                    continue
+                rt.cb.set_portfolio_open(rt.spec.starting_balance)
 
         for sym in SYMBOLS:
             if self._prefetched and sym in self._prefetch_daily:
@@ -1136,13 +1160,38 @@ class ORBBot:
                 self.ops.alert(f"⚠️ <b>FABIO signal loop error [{sym}]</b>\n{e}")
         self._drain_mr_paper(allow_entries=True)
 
-    def _init_mr_paper_executor(self) -> None:
+    def _setup_mr_paper_books(self) -> None:
+        """MR-Moomoo gets its own OM/CB; optional MR-Tradier book beside it."""
+        mr_om = OrderManager(self.trade_ctx, self.quote_ctx, self.trd_env)
+        mr_cb = new_isolated_circuit()
+        books = getattr(self, "_paper_books", None)
+        if books is None:
+            self._paper_books = PaperBookRegistry()
+            self._paper_books.bind(
+                BOOK_ORB_MOOMOO, order_mgr=self.order_mgr, cb=self.cb
+            )
+            books = self._paper_books
+        if BOOK_MR_MOOMOO not in books:
+            books.bind(BOOK_MR_MOOMOO, order_mgr=mr_om, cb=mr_cb)
+        else:
+            mr_rt = books.get(BOOK_MR_MOOMOO)
+            mr_om = mr_rt.order_mgr if mr_rt else mr_om
+            mr_cb = mr_rt.cb if mr_rt else mr_cb
+        self._init_mr_paper_executor(order_mgr=mr_om, cb=mr_cb)
+        try_bind_tradier_books(books, mr_paper=True)
+        mr_t = books.get("mr-tradier")
+        if mr_t is not None:
+            self._mr_executors.append(
+                make_mr_executor_for_book(mr_t, ops=self.ops, enabled=True)
+            )
+
+    def _init_mr_paper_executor(self, order_mgr=None, cb=None) -> None:
         """Construct MR paper executor. Default ORB path never calls this."""
         from fabio_live.mr_paper import DurableMrCursor, MR_QUEUE_PATH_ENV, MrPaperExecutor
         from signal_intake.ids import IdempotencyStore
 
-        mr_cb = RiskCircuitBreaker() if MR_CB_PARTITION else self.cb
-        orb_cb = self.cb if mr_cb is not self.cb else None
+        mgr = order_mgr if order_mgr is not None else self.order_mgr
+        mr_cb = cb if cb is not None else new_isolated_circuit()
         self._mr_store = IdempotencyStore()
         self._mr_cursor = None
         queue_path = os.getenv(MR_QUEUE_PATH_ENV, "").strip()
@@ -1152,23 +1201,39 @@ class ORBBot:
                 print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
             self._mr_cursor = cursor
             self._mr_queue_offset = int(cursor.offset)
-        self._mr_executor = MrPaperExecutor(
-            self.order_mgr,
+        executor = MrPaperExecutor(
+            mgr,
             mr_cb,
-            orb_cb=orb_cb,
-            ops=self.ops,
+            orb_cb=None,
+            ops=getattr(self, "ops", None),
             paper_only=True,
             enabled=True,
-            get_portfolio=lambda: min(
-                get_portfolio_value(self.trade_ctx),
-                STRATEGY_CAPITAL * RESEARCH_RISK_CAP_MULTIPLIER,
-            ),
+            modeled_book=PAPER_BOOK_STARTING_BALANCE,
+            get_portfolio=lambda: PAPER_BOOK_STARTING_BALANCE
+            + float(mr_cb.realized_pnl or 0.0),
+            source="mr",
+            book_id=BOOK_MR_MOOMOO,
         )
+        self._mr_executor = executor
+        executors = list(getattr(self, "_mr_executors", []) or [])
+        if executor not in executors:
+            executors.insert(0, executor)
+        self._mr_executors = executors
+
+    def _iter_mr_executors(self) -> list:
+        seen: list = []
+        for ex in list(getattr(self, "_mr_executors", []) or []):
+            if ex is not None and ex not in seen:
+                seen.append(ex)
+        primary = getattr(self, "_mr_executor", None)
+        if primary is not None and primary not in seen:
+            seen.insert(0, primary)
+        return seen
 
     def _drain_mr_paper(self, allow_entries: bool = True) -> None:
         """No-op unless FABIO_MR_PAPER_ENABLED constructed an executor."""
-        executor = getattr(self, "_mr_executor", None)
-        if executor is None:
+        executors = self._iter_mr_executors()
+        if not executors:
             return
         # Match ORB: no new work while paused (startup reconcile / operator).
         # Leaves the in-memory queue and JSONL cursor untouched.
@@ -1181,17 +1246,19 @@ class ORBBot:
         if hasattr(self, "_mr_queue"):
             self._mr_queue.clear()
         store = getattr(self, "_mr_store", None)
-        port = min(
-            get_portfolio_value(self.trade_ctx),
-            STRATEGY_CAPITAL * RESEARCH_RISK_CAP_MULTIPLIER,
-        )
 
         def _run(payload: dict) -> None:
             try:
                 intent = parse_payload(payload, store=store)
-                executor.consider(
-                    intent, portfolio_val=port, allow_entries=allow_entries
-                )
+                for executor in executors:
+                    port = (
+                        float(executor.get_portfolio())
+                        if executor.get_portfolio
+                        else PAPER_BOOK_STARTING_BALANCE
+                    )
+                    executor.consider(
+                        intent, portfolio_val=port, allow_entries=allow_entries
+                    )
             except Exception as e:
                 print(f"  ⚠  [mr_paper] drain error: {e}")
 
@@ -1351,6 +1418,20 @@ class ORBBot:
             regime=regime.day_color,
         )
         self.order_mgr.enter(sym, direction, last_price, risk_mult, port_val)
+        books = getattr(self, "_paper_books", None)
+        if books is not None and self.order_mgr.has_position(sym):
+            pos = self.order_mgr.positions.get(sym) or {}
+            mirror_orb_fill_to_tradier_book(
+                books,
+                sym,
+                pos,
+                risk_pct=risk_mult,
+                portfolio_val=PAPER_BOOK_STARTING_BALANCE,
+            )
+            orb_rt = books.get(BOOK_ORB_MOOMOO)
+            if orb_rt is not None:
+                orb_rt.sync_ledger_from_positions()
+                orb_rt.ledger.save()
 
         if self.order_mgr.has_position(sym):
             self.signals[sym] = direction
@@ -1785,35 +1866,62 @@ class ORBBot:
                 )
 
         # Flatten leftover MR-tagged tracked positions only (hard isolate).
-        # Never market-close unmarked / ORB legs from this loop. No exercise.
+        # Each MR book uses its own OrderManager. Never market-close unmarked
+        # / ORB legs from this loop. No exercise.
         from fabio_live.mr_paper import is_mr_position
 
-        leftover = list(getattr(self.order_mgr, "positions", {}) or {})
-        mr_ex = getattr(self, "_mr_executor", None)
-        for sym in leftover:
-            if sym in self.signals:
+        for mr_ex in self._iter_mr_executors():
+            leftover_mgr = getattr(mr_ex, "order_mgr", None)
+            if leftover_mgr is None:
                 continue
-            pos = self.order_mgr.positions.get(sym) or {}
-            owned = bool(mr_ex is not None and mr_ex.owns(sym))
-            if not is_mr_position(pos, owned=owned):
-                continue
-            direction = pos.get("direction", "")
-            result = self.order_mgr.exit_result(sym, reason="EOD")
-            if result.get("success"):
-                pnl = float(result.get("pnl", 0.0))
-                if mr_ex is not None:
+            leftover = list(getattr(leftover_mgr, "positions", {}) or {})
+            for sym in leftover:
+                if sym in self.signals:
+                    continue
+                pos = leftover_mgr.positions.get(sym) or {}
+                owned = bool(mr_ex.owns(sym))
+                if not is_mr_position(pos, owned=owned):
+                    continue
+                direction = pos.get("direction", "")
+                result = leftover_mgr.exit_result(sym, reason="EOD")
+                if result.get("success"):
+                    pnl = float(result.get("pnl", 0.0))
                     mr_ex.record_close(pnl)
                     mr_ex.release(sym)
+                    print(f"  [EOD] Flattened leftover MR {sym} {direction} pnl={pnl:+.0f}")
                 else:
-                    self.cb.record_result(pnl)
-                print(f"  [EOD] Flattened leftover MR {sym} {direction} pnl={pnl:+.0f}")
-            else:
-                self.ops.alert(
-                    f"⚠️ <b>EOD leftover exit failed [{sym}]</b>\n"
-                    f"error={result.get('error', 'unknown')}"
-                )
+                    self.ops.alert(
+                        f"⚠️ <b>EOD leftover exit failed [{sym}]</b>\n"
+                        f"error={result.get('error', 'unknown')}"
+                    )
+            books = getattr(self, "_paper_books", None)
+            if books is not None:
+                for rt in books.books_for_broker("moomoo"):
+                    if rt.spec.strategy != "mr":
+                        continue
+                    rt.sync_ledger_from_positions()
+                    rt.ledger.save()
+
+        books = getattr(self, "_paper_books", None)
+        if books is not None:
+            orb_t = books.get("orb-tradier")
+            if orb_t is not None:
+                orb_t.flatten_tracked(reason="EOD")
 
         print("\n  [EOD] Sweeping Moomoo account for any remaining open positions...")
+        protected = set()
+        books = getattr(self, "_paper_books", None)
+        if books is not None:
+            protected.update(
+                books.protected_codes_for_broker("moomoo", except_book=BOOK_ORB_MOOMOO)
+            )
+        for mr_ex in self._iter_mr_executors():
+            mgr = getattr(mr_ex, "order_mgr", None)
+            if mgr is None or mgr is self.order_mgr:
+                continue
+            for pos in (getattr(mgr, "positions", {}) or {}).values():
+                if isinstance(pos, dict) and pos.get("code"):
+                    protected.add(str(pos["code"]).strip())
         try:
             ret, pos_df = self.trade_ctx.position_list_query(
                 trd_env=self.order_mgr.trd_env
@@ -1835,7 +1943,12 @@ class ORBBot:
                         f"⚠️ <b>EOD sweep found {len(orphans)} orphaned position(s)</b> — closing now."
                     )
                     for _, row in orphans.iterrows():
-                        code = row.get("code", "")
+                        code = str(row.get("code", "") or "").strip()
+                        if code and code in protected:
+                            print(
+                                f"   ↷ Skipping {code} — belongs to another Moomoo paper book"
+                            )
+                            continue
                         qty = int(row.get("qty", 0))
                         raw_pl = row.get("unrealized_pl", 0)
                         try:

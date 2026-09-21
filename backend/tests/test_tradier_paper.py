@@ -413,6 +413,7 @@ def test_flatten_cli_defaults_paper_not_live(monkeypatch):
     args = parser.parse_args([])
     assert args.env == "paper"
     assert args.scope == "options"
+    assert args.book == "orb-tradier"
     help_text = parser.format_help()
     assert "Default: paper" in help_text
     assert "FABIO_ALLOW_REAL_TRADING" in help_text
@@ -484,7 +485,7 @@ def test_flatten_main_reports_place_order_failures():
 def test_tradier_modules_do_not_import_moomoo():
     files = [
         BACKEND / "brokers" / "tradier" / "client.py",
-        BACKEND / "brokers" / "tradier" / "__init__.py",
+        BACKEND / "brokers" / "tradier" / "orders.py",
         BACKEND / "tradier_eod_flatten.py",
         BACKEND / "brokers" / "names.py",
     ]

@@ -27,6 +27,9 @@ This closes in the market only (sell longs / buy shorts). It does not exercise o
 **Paper pin:** ``--trd-env`` defaults to ``MOOMOO_TRADE_ENV``, else legacy ``MOOMOO_TRD_ENV``,
 else **SIMULATE** (never silently REAL). REAL also requires ``FABIO_ALLOW_REAL_TRADING=1``.
 
+**Paper books:** ``--book`` selects ``orb-moomoo`` (default) or ``mr-moomoo``. This never
+calls Tradier. Do not use this script to flatten a Tradier paper book.
+
 **Idempotency:** By default, re-queries positions (``refresh_cache=True``) before each
 ``place_order``. Each order gets a traceable ``remark`` (``eod_fs_<run>_<seq>[_code]``).
 Logs lines are UTC ISO timestamps. Use ``--no-refresh-per-order`` only if you accept
@@ -76,6 +79,13 @@ try:
 except ImportError:
     OpenSecTradeContext = None  # type: ignore
 
+from fabio_live.paper_books import (
+    BOOK_ORB_MOOMOO,
+    MOOMOO_BOOK_IDS,
+    default_flatten_book_id,
+    load_all_ledgers,
+    select_flatten_codes,
+)
 from paper_pin import enforce_paper_trading_pin, resolve_moomoo_trd_env_name
 
 COMPONENT = "moomoo_eod_failsafe"
@@ -284,6 +294,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Single position_list_query before all closes (fewer API reads; weaker vs partial fills)",
     )
     parser.add_argument(
+        "--book",
+        choices=MOOMOO_BOOK_IDS,
+        default=default_flatten_book_id("moomoo"),
+        help=(
+            "Which Moomoo paper book to flatten (default: %(default)s). "
+            "orb-moomoo and mr-moomoo are separate ledgers; this never calls Tradier."
+        ),
+    )
+    parser.add_argument(
         "--log-format",
         choices=("human", "jsonl"),
         default=os.environ.get("MOOMOO_LOG_FORMAT", "human"),
@@ -427,22 +446,39 @@ def main() -> int:
             return 0
 
         rows = _extract_closable_rows(pos, args.scope)
+        book_id = getattr(args, "book", None) or BOOK_ORB_MOOMOO
+        ledgers = load_all_ledgers()
+        keep = set(
+            select_flatten_codes(
+                book_id=book_id,
+                broker="moomoo",
+                account_codes=[r[0] for r in rows],
+                ledgers=ledgers,
+            )
+        )
+        rows = [r for r in rows if r[0] in keep]
 
         if not rows:
             _log(
                 "No closable positions after filters (refresh_cache=True).",
                 event="no_closable",
                 latency_ms=query_ms,
-                extra={"scope": args.scope},
+                extra={"scope": args.scope, "book": book_id},
             )
             return 0
 
         _log(
-            f"Found {len(rows)} position(s) to flatten ({args.scope}, trd_env={args.trd_env}):",
+            f"Found {len(rows)} position(s) to flatten "
+            f"(book={book_id}, {args.scope}, trd_env={args.trd_env}):",
             event="closable_list",
             decision="flatten",
             latency_ms=query_ms,
-            extra={"count": len(rows), "scope": args.scope, "trd_env": args.trd_env},
+            extra={
+                "count": len(rows),
+                "scope": args.scope,
+                "trd_env": args.trd_env,
+                "book": book_id,
+            },
         )
         for code, qty, side in rows:
             _log(

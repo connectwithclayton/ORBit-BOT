@@ -2,8 +2,10 @@
 """
 Tradier PAPER flatten — separate from Moomoo ``moomoo_eod_failsafe.py``.
 
-Market-closes open positions on the Tradier sandbox book. Never calls Moomoo
-OpenD. Never exercises options. Default env is **paper** (sandbox).
+Market-closes open positions on **one** Tradier paper book (``--book``,
+default ``orb-tradier``). Never calls Moomoo OpenD. Never flattens the
+MR-Tradier book unless ``--book mr-tradier``. Never exercises options.
+Default env is **paper** (sandbox).
 
 Live ``api.tradier.com`` / ``--env live`` is refused unless
 ``FABIO_ALLOW_REAL_TRADING=1`` (same allow flag as the Moomoo paper pin).
@@ -24,6 +26,13 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from fabio_live.paper_books import (
+    BOOK_ORB_TRADIER,
+    TRADIER_BOOK_IDS,
+    default_flatten_book_id,
+    flatten_symbol_filters,
+    load_all_ledgers,
+)
 from paper_pin import ALLOW_REAL_ENV, TRADIER_ENV_NAME, enforce_tradier_paper_pin
 
 COMPONENT = "tradier_eod_flatten"
@@ -52,9 +61,19 @@ def default_tradier_env_choice() -> str:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Tradier paper flatten: market-close open positions on the sandbox book. "
-            "Separate from moomoo_eod_failsafe.py. Does not exercise options."
+            "Tradier paper flatten: market-close one Tradier paper book. "
+            "Separate from moomoo_eod_failsafe.py. Does not exercise options. "
+            "Does not flatten Moomoo or the other Tradier strategy book."
         )
+    )
+    parser.add_argument(
+        "--book",
+        choices=TRADIER_BOOK_IDS,
+        default=default_flatten_book_id("tradier"),
+        help=(
+            "Which Tradier paper book to flatten (default: %(default)s). "
+            "orb-tradier and mr-tradier are separate; this never calls Moomoo."
+        ),
     )
     parser.add_argument(
         "--env",
@@ -149,18 +168,34 @@ def main(argv: list[str] | None = None, *, client=None) -> int:
             _log(f"ERROR: {exc}", err=True, event="client_init_failed", reason_code="init")
             return 1
 
+    book_id = getattr(args, "book", None) or BOOK_ORB_TRADIER
+    only, exclude = flatten_symbol_filters(book_id, "tradier", load_all_ledgers())
     _log(
-        f"Tradier flatten start env={args.env} scope={args.scope} dry_run={args.dry_run}",
+        f"Tradier flatten start book={book_id} env={args.env} "
+        f"scope={args.scope} dry_run={args.dry_run}",
         event="run_start",
-        extra={"env": args.env, "scope": args.scope, "dry_run": args.dry_run},
+        extra={
+            "book": book_id,
+            "env": args.env,
+            "scope": args.scope,
+            "dry_run": args.dry_run,
+        },
     )
     try:
-        summary = client.flatten_open_positions(
+        flatten_kwargs = dict(
             scope=args.scope,
             dry_run=args.dry_run,
             sleep_fn=time.sleep,
             sleep_between_orders=max(0.0, float(args.sleep_between_orders)),
         )
+        try:
+            summary = client.flatten_open_positions(
+                **flatten_kwargs,
+                only_symbols=only,
+                exclude_symbols=exclude,
+            )
+        except TypeError:
+            summary = client.flatten_open_positions(**flatten_kwargs)
     except Exception as exc:
         _log(f"ERROR: flatten failed: {exc}", err=True, event="flatten_error")
         return 1

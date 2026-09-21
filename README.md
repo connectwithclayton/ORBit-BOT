@@ -100,6 +100,21 @@ PYTHONPATH=backend:frontend python3 backend/tradier_eod_flatten.py --scope optio
 
 **Paper pin:** `--env` defaults to **`paper`** (sandbox `https://sandbox.tradier.com`). Live `api.tradier.com` / `--env live` requires `FABIO_ALLOW_REAL_TRADING=1`. Tradier does **not** read `MOOMOO_TRADE_ENV`. Closes in the market only; it does not exercise options.
 
+Pass `--book orb-tradier` (default) or `--book mr-tradier`. Moomoo fail-safe takes `--book orb-moomoo` (default) or `--book mr-moomoo`. Never share those flatten scripts across firms.
+
+### Four isolated paper books (broker comparison)
+
+Each strategy gets its own **$10,000** starting balance on each paper account. Ledgers, circuits, and flatten are per book — not a shared flatten across brokers or across strategies on the same firm.
+
+| Book | `source=` | FIFO notes | Flatten |
+|---|---|---|---|
+| ORB-Moomoo | `moomoo_paper` | `moomoo_paper_fifo` (preserved) | `moomoo_eod_failsafe.py --book orb-moomoo` |
+| ORB-Tradier | `tradier_paper` | `tradier_paper_fifo` | `tradier_eod_flatten.py --book orb-tradier` |
+| MR-Moomoo | `mr` | `mr_paper_fifo` | `moomoo_eod_failsafe.py --book mr-moomoo` |
+| MR-Tradier | `mr_tradier` | `mr_tradier_paper_fifo` | `tradier_eod_flatten.py --book mr-tradier` |
+
+Default boot is still ORB-Moomoo OpenD paper. `FABIO_MR_PAPER_ENABLED=1` adds the MR-Moomoo book. `FABIO_TRADIER_PAPER_BOOKS=1` constructs the Tradier books (sandbox allowlist; no live/REAL). OPTIONS_ONLY and no-exercise still apply. MR multi-leg SKIP / hard-isolate still apply on MR books.
+
 ---
 
 ## Quick start

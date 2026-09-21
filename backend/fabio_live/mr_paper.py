@@ -1,14 +1,14 @@
-"""Optional MR paper auto-trade through the existing Moomoo risk box.
+"""Optional MR paper auto-trade through an isolated paper book.
 
 Default **off**. Set ``FABIO_MR_PAPER_ENABLED=1`` to drain accepted MR intents
-through ``RiskCircuitBreaker.can_enter`` + the same sizing formula into
-``OrderManager`` on **SIMULATE/paper only**.
+through ``RiskCircuitBreaker.can_enter`` + the same sizing formula into the
+**MR-Moomoo** paper book (separate OrderManager / CB / ledger from ORB-Moomoo).
+MR-Tradier is a fourth book constructed beside this executor when Tradier
+paper books are enabled — this module still does not import Tradier.
 
 Does not touch ``SignalEngine.check_breakout`` or ``MarketRegime``.
-Does not enable Tradier dual books (slice 5). A Tradier paper adapter may
-exist for isolated ``place_order``; this executor still uses Moomoo
-``OrderManager`` only. Hard isolate: MR never overwrites ORB ``positions[symbol]``;
-lock-in / MR leftover sells only close ``source=mr`` (or executor-owned) legs;
+Hard isolate: MR never overwrites ORB ``positions[symbol]``; lock-in / leftover
+sells only close ``source=mr`` / ``source=mr_tradier`` (or executor-owned) legs;
 SPY/QQQ/NVDA entries are denied unless ``FABIO_MR_ALLOW_ORB_SYMBOLS=1``.
 Never exercises; EOD still market-closes via ``OrderManager._sell``.
 """
@@ -29,6 +29,11 @@ from fabio_live.constants import (
     RISK_PCT_MAX,
     STRATEGY_CAPITAL,
     SYMBOLS,
+)
+from fabio_live.paper_books import (
+    BOOK_MR_MOOMOO,
+    MR_BOOK_SOURCES,
+    PAPER_BOOK_STARTING_BALANCE,
 )
 from paper_pin import enforce_paper_trading_pin, is_real_trd_env
 from signal_intake.ids import IdempotencyStore
@@ -123,10 +128,11 @@ def orb_entry_deny_symbols() -> frozenset[str]:
 
 
 def is_mr_position(pos: dict | None, *, owned: bool = False) -> bool:
-    """True only for tagged MR legs (or same-process executor ownership)."""
+    """True only for tagged MR book legs (or same-process executor ownership)."""
     if not pos:
         return False
-    if str(pos.get("source") or "").strip().lower() == SOURCE_MR:
+    src = str(pos.get("source") or "").strip().lower()
+    if src in MR_BOOK_SOURCES:
         return True
     return bool(owned)
 
@@ -280,7 +286,7 @@ class DurableMrCursor:
 
 
 class MrPaperExecutor:
-    """Run accepted MR intents through the existing CB + Moomoo paper OrderManager."""
+    """Run accepted MR intents through one isolated paper book's OM + CB."""
 
     def __init__(
         self,
@@ -294,6 +300,8 @@ class MrPaperExecutor:
         modeled_book: float = STRATEGY_CAPITAL,
         enabled: bool | None = None,
         get_portfolio: Callable[[], float] | None = None,
+        source: str = SOURCE_MR,
+        book_id: str = BOOK_MR_MOOMOO,
     ) -> None:
         self.order_mgr = order_mgr
         self.cb = cb
@@ -301,9 +309,11 @@ class MrPaperExecutor:
         self.ops = ops
         self.paper_only = paper_only
         self.options_only = OPTIONS_ONLY_EXECUTION if options_only is None else options_only
-        self.modeled_book = float(modeled_book)
+        self.modeled_book = float(modeled_book or PAPER_BOOK_STARTING_BALANCE)
         self._enabled = mr_paper_enabled() if enabled is None else bool(enabled)
         self.get_portfolio = get_portfolio
+        self.source = str(source or SOURCE_MR).strip() or SOURCE_MR
+        self.book_id = str(book_id or BOOK_MR_MOOMOO).strip() or BOOK_MR_MOOMOO
         self._owned: set[str] = set()
         if self.paper_only:
             enforce_paper_trading_pin(getattr(order_mgr, "trd_env", "SIMULATE"))
@@ -393,7 +403,7 @@ class MrPaperExecutor:
         self._log_decision(
             intent,
             "ENTER",
-            f"source={SOURCE_MR} | paper=SIMULATE | "
+            f"source={self.source} | paper=SIMULATE | book={self.book_id} | "
             f"risk_pct={risk_pct:.4f} | {intent.contract_key}",
         )
         self.order_mgr.enter_option_contract(
@@ -404,7 +414,7 @@ class MrPaperExecutor:
             premium=intent.premium,
             risk_pct=risk_pct,
             portfolio_val=risk_base_dollars(port),
-            source=SOURCE_MR,
+            source=self.source,
         )
         if not self.order_mgr.has_position(intent.symbol):
             return self._skip(intent, SKIP_NO_FILL)
@@ -415,7 +425,7 @@ class MrPaperExecutor:
         self._owned.add(intent.symbol)
         return {
             "status": "entered",
-            "source": SOURCE_MR,
+            "source": self.source,
             "symbol": intent.symbol,
             "action": ACTION_BUY,
             "placed": True,
@@ -450,11 +460,11 @@ class MrPaperExecutor:
         self._log_decision(
             intent,
             "EXIT",
-            f"source={SOURCE_MR} | lock-in | market sell-to-close | pnl={pnl:.2f}",
+            f"source={self.source} | lock-in | market sell-to-close | pnl={pnl:.2f}",
         )
         return {
             "status": "exited",
-            "source": SOURCE_MR,
+            "source": self.source,
             "symbol": intent.symbol,
             "action": ACTION_EXIT,
             "placed": True,
@@ -466,7 +476,7 @@ class MrPaperExecutor:
     def _skip(
         self, intent: NormalizedIntent, skip: str, *, detail: str = ""
     ) -> dict[str, Any]:
-        reason = f"source={SOURCE_MR} | skip={skip}"
+        reason = f"source={self.source} | skip={skip}"
         if detail:
             reason = f"{reason} | {detail}"
         self._log_decision(intent, "SKIP", reason)
@@ -482,7 +492,7 @@ class MrPaperExecutor:
     ) -> dict[str, Any]:
         return {
             "status": "skipped",
-            "source": SOURCE_MR,
+            "source": self.source,
             "symbol": intent.symbol,
             "action": intent.action or "",
             "placed": placed,

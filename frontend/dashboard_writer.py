@@ -25,6 +25,20 @@ from pathlib import Path
 
 from manual_position_omissions import is_omitted_dashboard_close_trade
 
+try:
+    from fabio_live.paper_books import is_allowed_open_position_notes as _book_notes_ok
+except ImportError:  # pragma: no cover - dashboard-only hosts
+    def _book_notes_ok(notes: str) -> bool:
+        n = str(notes or "").strip()
+        if n.startswith("broker code=") or n == "moomoo_paper_fifo":
+            return True
+        return False
+
+
+def is_allowed_open_position_notes(notes: str) -> bool:
+    """Open-row notes: preserve ``moomoo_paper_fifo`` plus other paper-book tags."""
+    return _book_notes_ok(notes)
+
 _FABIO_ROOT = Path(__file__).resolve().parent.parent
 DATA_FILE   = str(_FABIO_ROOT / "backend" / "trade_data.json")
 DASH_LOCAL  = str(_FABIO_ROOT / "frontend" / "live_dashboard.html")
@@ -62,8 +76,10 @@ def normalize_and_validate_open_positions(opens: list[Any]) -> tuple[list[dict],
     """
     Keep only rows that look like broker or FIFO snapshots (not trade-log dicts).
 
-    Allowed `notes`: ``broker code=...`` (EOD Moomoo snapshot) or ``moomoo_paper_fifo``
-    (reconciled open inventory). Drops non-dicts, rows with ``exit_reason``, invalid
+    Allowed `notes`: ``broker code=...`` (EOD Moomoo snapshot), ``moomoo_paper_fifo``
+    (reconciled Moomoo FIFO — preserved), or other paper-book tags
+    (``tradier_paper_fifo``, ``source=tradier_paper``, ``source=mr``,
+    ``source=mr_tradier``, …). Drops non-dicts, rows with ``exit_reason``, invalid
     symbol/contracts, or unrecognized ``notes``.
     """
     if not opens:
@@ -86,10 +102,7 @@ def normalize_and_validate_open_positions(opens: list[Any]) -> tuple[list[dict],
             dropped += 1
             continue
         notes = str(item.get("notes", "")).strip()
-        if not (
-            notes.startswith("broker code=")
-            or notes == "moomoo_paper_fifo"
-        ):
+        if not is_allowed_open_position_notes(notes):
             dropped += 1
             continue
         kept.append(item)
@@ -413,6 +426,59 @@ def moomoo_position_records_to_dashboard_opens(
                 "vix": 0.0,
                 "or_atr_pct": 0.0,
                 "notes": f"broker code={code}",
+            }
+        )
+    return out
+
+
+def tradier_position_records_to_dashboard_opens(
+    records: list[Any],
+    as_of_date: str | None = None,
+    *,
+    source: str = "tradier_paper",
+) -> list[dict]:
+    """Dashboard opens from Tradier positions. Never tagged ``moomoo_paper_fifo``."""
+    today = as_of_date or datetime.date.today().isoformat()
+    tag = str(source or "tradier_paper").strip() or "tradier_paper"
+    notes = tag if tag in ("tradier_paper_fifo", "mr_tradier_paper_fifo") else f"source={tag}"
+    out: list[dict] = []
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("symbol") or row.get("option_symbol") or row.get("code") or "").strip()
+        try:
+            qty = int(float(row.get("quantity") or row.get("qty") or 0))
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0 or not code:
+            continue
+        raw = code.split(".")[-1]
+        m = _OPTION_CODE_CORE_RE.match(raw.upper())
+        if not m:
+            continue
+        symbol = m.group(1)
+        direction = "CALL" if m.group(2) == "C" else "PUT"
+        ep = 0.0
+        for k in ("cost_basis", "average_cost", "cost_price", "avg_price"):
+            v = row.get(k)
+            if v is not None and str(v).strip() != "":
+                try:
+                    ep = float(v)
+                    break
+                except (TypeError, ValueError):
+                    continue
+        out.append(
+            {
+                "date": today,
+                "symbol": symbol,
+                "direction": direction,
+                "entry_time": "—",
+                "entry_price": round(ep, 4),
+                "contracts": qty,
+                "vix": 0.0,
+                "or_atr_pct": 0.0,
+                "notes": notes,
+                "source": tag,
             }
         )
     return out
