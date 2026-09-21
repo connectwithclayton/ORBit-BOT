@@ -95,6 +95,11 @@ def main() -> int:
         print(f"FAIL: cannot load snapshot: {e}")
         return 1
 
+    # Desk-level gate: ops / data_health / worker liveness. Top-level `circuit`
+    # is a deprecated alias of the orb-moomoo book CB (SHIP-007). This gate does
+    # not require `books`, so pre-slice snapshots still PASS. Prefer
+    # books["orb-moomoo"]["cb"] when present; per-book checks are a later option.
+
     ts = str(snap.get("ts", ""))
     if not ts:
         failures.append("missing snapshot timestamp")
