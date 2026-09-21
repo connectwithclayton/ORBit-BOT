@@ -68,10 +68,13 @@ from fabio_live.paper_books import (
     BOOK_ORB_TRADIER,
     PAPER_BOOK_STARTING_BALANCE,
     PaperBookRegistry,
+    canonical_books_health_fallback,
+    enabled_paper_book_ids,
     flatten_sidecar_reason,
     make_mr_executor_for_book,
     mirror_orb_fill_to_tradier_book,
     new_isolated_circuit,
+    paper_books_health_map,
     try_bind_tradier_books,
     utc_now_iso,
     write_primary_last_flatten,
@@ -964,6 +967,9 @@ class ORBBot:
             return
         self._refresh_position_parity()
         ops_h = self.ops.health()
+        # Top-level `circuit` is a deprecated alias of the orb-moomoo book CB
+        # for one release so verify_phase2_reliability.py (and existing
+        # consumers) still work. Prefer books["orb-moomoo"]["cb"].
         snapshot = {
             "ts": self._now_market().isoformat(timespec="seconds"),
             "bot_state": {
@@ -1019,6 +1025,18 @@ class ORBBot:
             },
             "position_parity": dict(self._position_parity_latest),
         }
+        # Fail-soft: a bad FABIO_PAPER_BOOKS token (UnknownPaperBook) or any
+        # books-map error must not abort run(). Canonical four keys always emit.
+        try:
+            snapshot["books"] = paper_books_health_map(
+                getattr(self, "_paper_books", None),
+                enabled_ids=enabled_paper_book_ids(
+                    mr_paper=MR_PAPER_ENABLED, strict=False
+                ),
+            )
+        except Exception as e:
+            print(f"  [HEALTH] books map failed: {e}")
+            snapshot["books"] = canonical_books_health_fallback()
         self._write_health_snapshot(snapshot)
         pp = snapshot["position_parity"]
         pp_note = (

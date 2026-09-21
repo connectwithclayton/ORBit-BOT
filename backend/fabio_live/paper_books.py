@@ -25,6 +25,20 @@ PAPER_BOOK_STARTING_BALANCE = 10_000.0
 PAPER_BOOKS_ENV = "FABIO_PAPER_BOOKS"
 TRADIER_PAPER_BOOKS_ENV = "FABIO_TRADIER_PAPER_BOOKS"
 LEDGER_DIR_ENV = "FABIO_PAPER_BOOK_LEDGER_DIR"
+# Health JSONL: never dump full code lists (size). Preview is sorted, truncated.
+LEDGER_CODES_PREVIEW_LIMIT = 8
+_LAST_FLATTEN_SUMMARY_KEYS = (
+    "book_id",
+    "broker",
+    "script",
+    "started_at_utc",
+    "finished_at_utc",
+    "dry_run",
+    "exit_code",
+    "selected_codes_count",
+    "reason",
+    "layer",
+)
 
 BOOK_ORB_MOOMOO = "orb-moomoo"
 BOOK_ORB_TRADIER = "orb-tradier"
@@ -69,6 +83,7 @@ LAST_FLATTEN_REASONS = frozenset(
     }
 )
 LAST_FLATTEN_SUFFIX = ".last_flatten.json"
+LAST_FLATTEN_SIDECAR_SUFFIX = LAST_FLATTEN_SUFFIX  # SHIP-007 alias of SHIP-008 path
 
 
 @dataclass(frozen=True)
@@ -186,6 +201,187 @@ def modeled_book_equity(
 ) -> float:
     """Sizing / CB book value: $10k start plus this book's realized PnL."""
     return float(starting) + float(getattr(cb, "realized_pnl", 0.0) or 0.0)
+
+
+def last_flatten_sidecar_path(
+    book_id: str, directory: str | Path | None = None
+) -> Path:
+    """Alias of ``last_flatten_path``. Health reads; SHIP-008 writers own the file."""
+    return last_flatten_path(book_id, directory)
+
+
+def read_last_flatten_summary(
+    book_id: str, directory: str | Path | None = None
+) -> dict[str, Any] | None:
+    """Compact last-flatten summary, or None when the sidecar is absent/unreadable.
+
+    Uses SHIP-008 ``read_last_flatten`` (book_id-checked). Health never writes.
+    """
+    data = read_last_flatten(book_id, directory)
+    if not data:
+        return None
+    summary: dict[str, Any] = {}
+    for key in _LAST_FLATTEN_SUMMARY_KEYS:
+        if key in data:
+            summary[key] = data[key]
+    for list_key, count_key in (("planned", "planned_count"), ("failures", "failure_count")):
+        if list_key not in data:
+            continue
+        raw = data[list_key]
+        if isinstance(raw, list):
+            summary[count_key] = len(raw)
+        elif count_key not in summary:
+            summary[count_key] = raw
+    if summary:
+        return summary
+    scalars: dict[str, Any] = {}
+    for key, val in data.items():
+        if isinstance(val, (str, int, float, bool)) or val is None:
+            scalars[key] = val
+    return scalars or {"present": True}
+
+
+def circuit_breaker_snapshot(
+    cb: RiskCircuitBreaker | None,
+    *,
+    starting: float = PAPER_BOOK_STARTING_BALANCE,
+) -> dict[str, Any]:
+    """Per-book CB payload. Unbound books still emit every key (zeros + $10k denom)."""
+    if cb is None:
+        return {
+            "portfolio_at_open": float(starting),
+            "realized_pnl": 0.0,
+            "daily_loss_pct": 0.0,
+            "trade_count": 0,
+            "loss_streak": 0,
+        }
+    return {
+        "portfolio_at_open": float(getattr(cb, "portfolio_at_open", 0.0) or 0.0),
+        "realized_pnl": float(getattr(cb, "realized_pnl", 0.0) or 0.0),
+        "daily_loss_pct": round(float(cb.daily_loss_pct), 6),
+        "trade_count": int(getattr(cb, "trade_count", 0) or 0),
+        "loss_streak": int(getattr(cb, "loss_streak", 0) or 0),
+    }
+
+
+def _ledger_codes_preview(codes: Iterable[str]) -> list[str]:
+    ordered = sorted({str(c).strip() for c in codes if str(c).strip()})
+    return ordered[:LEDGER_CODES_PREVIEW_LIMIT]
+
+
+def _enabled_book_id_set(enabled_ids: Iterable[str] | None) -> set[str]:
+    """Canonical ids only. Unknown tokens are skipped (never a fifth book key)."""
+    if enabled_ids is None:
+        return set(enabled_paper_book_ids(strict=False))
+    enabled: set[str] = set()
+    for raw in enabled_ids:
+        token = str(raw or "").strip().lower()
+        if not token:
+            continue
+        spec = PAPER_BOOKS_BY_ID.get(token)
+        if spec is None:
+            print(f"  ⚠  [HEALTH] skipping unknown paper book token {token!r}")
+            continue
+        enabled.add(spec.book_id)
+    return enabled
+
+
+def canonical_books_health_fallback(
+    *, enabled_ids: Iterable[str] = ()
+) -> dict[str, dict[str, Any]]:
+    """Four canonical keys, no I/O. Used when health books assembly fails."""
+    enabled = _enabled_book_id_set(enabled_ids)
+    books: dict[str, dict[str, Any]] = {}
+    for spec in ALL_PAPER_BOOKS:
+        books[spec.book_id] = {
+            "enabled": spec.book_id in enabled,
+            "bound": False,
+            "broker": spec.broker,
+            "strategy": spec.strategy,
+            "source": spec.source,
+            "starting_balance": float(spec.starting_balance),
+            "cb": circuit_breaker_snapshot(None, starting=spec.starting_balance),
+            "ledger": {
+                "path": str(ledger_directory() / f"{spec.book_id}.json"),
+                "code_count": 0,
+                "codes_preview": [],
+            },
+            "modeled_equity": float(spec.starting_balance),
+            "last_flatten": None,
+        }
+    return books
+
+
+def paper_books_health_map(
+    registry: PaperBookRegistry | None = None,
+    *,
+    enabled_ids: Iterable[str] | None = None,
+    ledger_dir: str | Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Health JSONL ``books`` map: all four ids, always present.
+
+    Unbound / disabled books still include every field with ``enabled`` /
+    ``bound`` false. Never omit a book key (omission looks like healthy-empty).
+    Each book's CB is that runtime's circuit only — ORB PnL is never copied
+    onto MR or Tradier books. Unknown enabled-id tokens are skipped, not raised.
+    """
+    enabled = _enabled_book_id_set(enabled_ids)
+    books: dict[str, dict[str, Any]] = {}
+    for spec in ALL_PAPER_BOOKS:
+        rt = registry.get(spec.book_id) if registry is not None else None
+        bound = rt is not None
+        dir_for: str | Path | None = ledger_dir
+        if dir_for is None and registry is not None:
+            try:
+                dir_for = registry._ledger_dir_for(spec.book_id)
+            except Exception:
+                dir_for = ledger_dir
+        try:
+            if bound:
+                codes = set(rt.ledger.codes)
+                path = str(rt.ledger.path)
+                cb_snap = circuit_breaker_snapshot(
+                    rt.cb, starting=spec.starting_balance
+                )
+                modeled = float(rt.modeled_equity())
+            else:
+                # Unbound CB stays zeros / modeled_equity=starting_balance even
+                # when a disk ledger has residual codes — ledger fields are the
+                # source of truth for those codes.
+                disk = PaperBookLedger(spec.book_id, directory=dir_for)
+                disk.load()
+                codes = set(disk.codes)
+                path = str(disk.path)
+                cb_snap = circuit_breaker_snapshot(
+                    None, starting=spec.starting_balance
+                )
+                modeled = float(spec.starting_balance)
+            preview = _ledger_codes_preview(codes)
+            books[spec.book_id] = {
+                "enabled": spec.book_id in enabled,
+                "bound": bound,
+                "broker": spec.broker,
+                "strategy": spec.strategy,
+                "source": spec.source,
+                "starting_balance": float(spec.starting_balance),
+                "cb": cb_snap,
+                "ledger": {
+                    "path": path,
+                    "code_count": len(codes),
+                    "codes_preview": preview,
+                },
+                "modeled_equity": modeled,
+                "last_flatten": read_last_flatten_summary(
+                    spec.book_id, directory=dir_for
+                ),
+            }
+        except Exception as exc:
+            print(f"  ⚠  [HEALTH] book {spec.book_id} snapshot failed: {exc}")
+            fallback = canonical_books_health_fallback(enabled_ids=enabled)
+            row = fallback[spec.book_id]
+            row["bound"] = bound
+            books[spec.book_id] = row
+    return books
 
 
 def init_book_circuit(
@@ -424,22 +620,40 @@ def tradier_paper_books_enabled() -> bool:
     return os.getenv(TRADIER_PAPER_BOOKS_ENV, "").strip() == "1"
 
 
-def enabled_paper_book_ids(*, mr_paper: bool | None = None) -> tuple[str, ...]:
+def enabled_paper_book_ids(
+    *, mr_paper: bool | None = None, strict: bool = True
+) -> tuple[str, ...]:
     """Books that may be constructed at runtime.
 
     Specs for all four always exist. Default runtime is ORB-Moomoo; MR-Moomoo
     joins when MR paper is on; Tradier books join only behind
     ``FABIO_TRADIER_PAPER_BOOKS=1``. ``FABIO_PAPER_BOOKS`` can pin an explicit
     comma list of the four ids.
+
+    ``strict=True`` (default) raises ``UnknownPaperBook`` on a bad pin token.
+    Health / live-loop callers pass ``strict=False`` so a typo cannot abort
+    ``run()`` — unknown tokens are logged and skipped.
     """
     raw = os.getenv(PAPER_BOOKS_ENV, "").strip()
     if raw:
         ids = []
+        unknown: list[str] = []
         for part in raw.split(","):
             token = part.strip().lower()
             if not token:
                 continue
-            ids.append(get_book(token).book_id)
+            spec = PAPER_BOOKS_BY_ID.get(token)
+            if spec is None:
+                unknown.append(token)
+                if strict:
+                    get_book(token)
+                continue
+            ids.append(spec.book_id)
+        if unknown and not strict:
+            print(
+                f"  ⚠  Skipping unknown {PAPER_BOOKS_ENV} token(s): "
+                + ", ".join(unknown)
+            )
         if ids:
             return tuple(dict.fromkeys(ids))
     out = [BOOK_ORB_MOOMOO]
