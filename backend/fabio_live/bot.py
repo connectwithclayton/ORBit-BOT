@@ -1230,6 +1230,31 @@ class ORBBot:
             seen.insert(0, primary)
         return seen
 
+    def _sync_paper_book_for_executor(self, executor) -> None:
+        """Persist the paper-book ledger for one MR executor after fill/exit."""
+        books = getattr(self, "_paper_books", None)
+        if books is None or executor is None:
+            return
+        book_id = getattr(executor, "book_id", None)
+        rt = books.get(book_id) if book_id else None
+        if rt is None:
+            mgr = getattr(executor, "order_mgr", None)
+            for candidate in books.all_runtimes():
+                if candidate.order_mgr is mgr:
+                    rt = candidate
+                    break
+        if rt is None:
+            return
+        rt.sync_ledger_from_positions()
+        rt.ledger.save()
+
+    def _sync_mr_paper_book_ledgers(self) -> None:
+        """Persist MR-Moomoo and MR-Tradier ledgers (fill and EOD)."""
+        books = getattr(self, "_paper_books", None)
+        if books is None:
+            return
+        books.sync_strategy_ledgers("mr")
+
     def _drain_mr_paper(self, allow_entries: bool = True) -> None:
         """No-op unless FABIO_MR_PAPER_ENABLED constructed an executor."""
         executors = self._iter_mr_executors()
@@ -1259,33 +1284,37 @@ class ORBBot:
                     executor.consider(
                         intent, portfolio_val=port, allow_entries=allow_entries
                     )
+                    self._sync_paper_book_for_executor(executor)
             except Exception as e:
                 print(f"  ⚠  [mr_paper] drain error: {e}")
 
-        for payload in payloads:
-            _run(payload)
-        cursor = getattr(self, "_mr_cursor", None)
-        if cursor is not None:
-            if cursor.refused:
-                # Never write offset=0 beside retained JSONL — next process
-                # would treat that as a valid cursor and re-drain the file.
-                print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
-                return
-            if payloads:
-                if not cursor.save():
+        try:
+            for payload in payloads:
+                _run(payload)
+            cursor = getattr(self, "_mr_cursor", None)
+            if cursor is not None:
+                if cursor.refused:
+                    # Never write offset=0 beside retained JSONL — next process
+                    # would treat that as a valid cursor and re-drain the file.
                     print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
                     return
-            rows = cursor.next_rows()
-            if rows is None:
-                print(f"  ⚠  [mr_paper] {cursor.refuse_reason or 'queue cursor refused'}")
-                return
-            for payload, end_off in rows:
-                if payload:
-                    _run(payload)
-                if not cursor.commit_offset(end_off):
-                    print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
+                if payloads:
+                    if not cursor.save():
+                        print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
+                        return
+                rows = cursor.next_rows()
+                if rows is None:
+                    print(f"  ⚠  [mr_paper] {cursor.refuse_reason or 'queue cursor refused'}")
                     return
-            self._mr_queue_offset = int(cursor.offset)
+                for payload, end_off in rows:
+                    if payload:
+                        _run(payload)
+                    if not cursor.commit_offset(end_off):
+                        print(f"  ⚠  [mr_paper] {cursor.refuse_reason}")
+                        return
+                self._mr_queue_offset = int(cursor.offset)
+        finally:
+            self._sync_mr_paper_book_ledgers()
 
     def _process_signal(self, sym: str):
         if sym not in self.regimes:
@@ -1894,13 +1923,7 @@ class ORBBot:
                         f"⚠️ <b>EOD leftover exit failed [{sym}]</b>\n"
                         f"error={result.get('error', 'unknown')}"
                     )
-            books = getattr(self, "_paper_books", None)
-            if books is not None:
-                for rt in books.books_for_broker("moomoo"):
-                    if rt.spec.strategy != "mr":
-                        continue
-                    rt.sync_ledger_from_positions()
-                    rt.ledger.save()
+        self._sync_mr_paper_book_ledgers()
 
         books = getattr(self, "_paper_books", None)
         if books is not None:

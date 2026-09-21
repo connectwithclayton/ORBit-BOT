@@ -323,12 +323,13 @@ def flatten_symbol_filters(
     book_id: str,
     broker: str,
     ledgers: Mapping[str, Iterable[str]] | None = None,
-) -> tuple[set[str] | None, set[str]]:
+) -> tuple[set[str], set[str]]:
     """``(only_symbols, exclude_symbols)`` for one firm's flatten script.
 
-    ``only_symbols is None`` means "all account rows except excludes" (ORB
-    firm-default with no ledger yet). An empty set means flatten nothing
-    (MR book without a ledger must not sweep the firm).
+    Always fail closed: ``only_symbols`` is a set, never ``None``. An empty
+    own ledger flattens nothing rather than the whole firm (which would
+    market-close the sibling strategy when that ledger was also unsaved).
+    Sibling codes on the same firm are always excluded.
     """
     spec = get_book(book_id)
     wanted = str(broker or "").strip().lower()
@@ -349,8 +350,6 @@ def flatten_symbol_filters(
     own = set(tables.get(spec.book_id) or ())
     if own:
         return own, other
-    if spec.is_firm_default:
-        return None, other
     return set(), other
 
 
@@ -391,11 +390,8 @@ def select_flatten_codes(
             continue
         if code in other:
             continue
-        if own:
-            if code not in own:
-                continue
-        elif not spec.is_firm_default:
-            # MR books without a ledger must not sweep the whole firm.
+        if not own or code not in own:
+            # Empty own ledger: flatten nothing (fail closed), never the firm.
             continue
         selected.append(code)
         seen.add(code)
@@ -517,6 +513,27 @@ class PaperBookRegistry:
 
     def all_runtimes(self) -> list[PaperBookRuntime]:
         return list(self._books.values())
+
+    def sync_and_save(self, book_id: str | None = None) -> None:
+        """Persist tracked codes for one book, or every bound book."""
+        if book_id is not None:
+            rt = self.get(book_id)
+            if rt is None:
+                return
+            rt.sync_ledger_from_positions()
+            rt.ledger.save()
+            return
+        for rt in self._books.values():
+            rt.sync_ledger_from_positions()
+            rt.ledger.save()
+
+    def sync_strategy_ledgers(self, strategy: str) -> None:
+        token = str(strategy or "").strip().lower()
+        for rt in self._books.values():
+            if rt.spec.strategy != token:
+                continue
+            rt.sync_ledger_from_positions()
+            rt.ledger.save()
 
 
 def new_isolated_circuit() -> RiskCircuitBreaker:

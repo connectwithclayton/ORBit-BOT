@@ -182,20 +182,23 @@ def main(argv: list[str] | None = None, *, client=None) -> int:
         },
     )
     try:
-        flatten_kwargs = dict(
+        summary = client.flatten_open_positions(
             scope=args.scope,
             dry_run=args.dry_run,
             sleep_fn=time.sleep,
             sleep_between_orders=max(0.0, float(args.sleep_between_orders)),
+            only_symbols=only,
+            exclude_symbols=exclude,
         )
-        try:
-            summary = client.flatten_open_positions(
-                **flatten_kwargs,
-                only_symbols=only,
-                exclude_symbols=exclude,
-            )
-        except TypeError:
-            summary = client.flatten_open_positions(**flatten_kwargs)
+    except TypeError as exc:
+        _log(
+            f"ERROR: flatten client rejected book filters; refuse unfiltered "
+            f"account flatten: {exc}",
+            err=True,
+            event="flatten_filters_required",
+            reason_code="book_filters_required",
+        )
+        return 1
     except Exception as exc:
         _log(f"ERROR: flatten failed: {exc}", err=True, event="flatten_error")
         return 1

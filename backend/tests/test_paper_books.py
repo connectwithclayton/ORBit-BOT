@@ -349,3 +349,184 @@ def test_orb_bot_still_defaults_moomoo_contexts():
     assert "self.order_mgr = OrderManager(self.trade_ctx, self.quote_ctx, trd_env)" in src
     assert "TradierPaperClient" not in src
     assert "FABIO_BROKER" not in src
+
+
+def test_mr_fills_update_moomoo_and_tradier_ledgers(tmp_path, monkeypatch):
+    from fabio_live.bot import ORBBot
+    from signal_intake.replay import SHELF_DIR, load_fixture
+    from tests.test_mr_paper import _executor
+
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    ex, mgr, _trade, cb = _executor(enabled=True, ask=0.79)
+    session = FakeSession([FakeResp(200, {"order": {"id": "1", "status": "ok"}})])
+    t_mgr = TradierOrderManager(
+        _client(session), source="mr_tradier", book_id=BOOK_MR_TRADIER
+    )
+    t_cb = init_book_circuit()
+    t_ex = MrPaperExecutor(
+        t_mgr,
+        t_cb,
+        enabled=True,
+        modeled_book=10_000,
+        source="mr_tradier",
+        book_id=BOOK_MR_TRADIER,
+    )
+    reg = PaperBookRegistry()
+    reg.bind(
+        BOOK_ORB_MOOMOO,
+        order_mgr=SimpleNamespace(positions={}),
+        ledger_dir=tmp_path,
+    )
+    reg.bind(BOOK_MR_MOOMOO, order_mgr=mgr, cb=cb, ledger_dir=tmp_path)
+    reg.bind(BOOK_MR_TRADIER, order_mgr=t_mgr, cb=t_cb, ledger_dir=tmp_path)
+
+    bot = ORBBot.__new__(ORBBot)
+    bot.paused = False
+    bot._paper_books = reg
+    bot._mr_executor = ex
+    bot._mr_executors = [ex, t_ex]
+    bot._mr_queue = [load_fixture(SHELF_DIR / "buy_nok_calls.json")]
+    bot._mr_store = None
+    bot._mr_cursor = None
+    bot._drain_mr_paper(allow_entries=True)
+
+    assert mgr.has_position("NOK")
+    assert t_mgr.has_position("NOK")
+    moomoo_ledger = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    tradier_ledger = PaperBookLedger(BOOK_MR_TRADIER, directory=tmp_path)
+    assert moomoo_ledger.load() is True
+    assert tradier_ledger.load() is True
+    assert any("NOK" in c for c in moomoo_ledger.codes)
+    assert any("NOK" in c for c in tradier_ledger.codes)
+
+    bot._sync_mr_paper_book_ledgers()
+    again = PaperBookLedger(BOOK_MR_TRADIER, directory=tmp_path)
+    assert again.load() is True
+    assert any("NOK" in c for c in again.codes)
+
+
+def test_eod_persists_mr_tradier_ledger(tmp_path):
+    from fabio_live.bot import ORBBot
+
+    t_mgr = SimpleNamespace(
+        positions={"NOK": {"code": "NOK261016C00010000", "source": "mr_tradier"}}
+    )
+    m_mgr = SimpleNamespace(
+        positions={"IBM": {"code": "US.IBM261016C00250000", "source": "mr"}}
+    )
+    reg = PaperBookRegistry()
+    reg.bind(BOOK_MR_MOOMOO, order_mgr=m_mgr, ledger_dir=tmp_path)
+    reg.bind(BOOK_MR_TRADIER, order_mgr=t_mgr, ledger_dir=tmp_path)
+    bot = ORBBot.__new__(ORBBot)
+    bot._paper_books = reg
+    bot._sync_mr_paper_book_ledgers()
+    moomoo = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
+    tradier = PaperBookLedger(BOOK_MR_TRADIER, directory=tmp_path)
+    assert moomoo.load() is True and tradier.load() is True
+    assert "US.IBM261016C00250000" in moomoo.codes
+    assert "NOK261016C00010000" in tradier.codes
+
+
+def test_empty_mr_ledger_does_not_allow_sibling_flatten():
+    """Empty own ledger fail-closes; never market-close the other strategy."""
+    spy = "US.SPY261016C00500000"
+    nok = "US.NOK261016C00010000"
+    ledgers = {
+        BOOK_ORB_MOOMOO: set(),
+        BOOK_MR_MOOMOO: set(),
+        BOOK_ORB_TRADIER: set(),
+        BOOK_MR_TRADIER: set(),
+    }
+    account = [spy, nok]
+    assert (
+        select_flatten_codes(
+            book_id=BOOK_ORB_MOOMOO,
+            broker="moomoo",
+            account_codes=account,
+            ledgers=ledgers,
+        )
+        == []
+    )
+    assert (
+        select_flatten_codes(
+            book_id=BOOK_MR_MOOMOO,
+            broker="moomoo",
+            account_codes=account,
+            ledgers=ledgers,
+        )
+        == []
+    )
+    only, exclude = flatten_symbol_filters(BOOK_ORB_MOOMOO, "moomoo", ledgers)
+    assert only == set()
+    assert only is not None
+    only_mr, _ = flatten_symbol_filters(BOOK_MR_MOOMOO, "moomoo", ledgers)
+    assert only_mr == set()
+
+    ledgers_sib = {BOOK_ORB_MOOMOO: set(), BOOK_MR_MOOMOO: {nok}}
+    orb = select_flatten_codes(
+        book_id=BOOK_ORB_MOOMOO,
+        broker="moomoo",
+        account_codes=account,
+        ledgers=ledgers_sib,
+    )
+    assert nok not in orb
+    assert orb == []
+    only_orb, exclude_orb = flatten_symbol_filters(
+        BOOK_ORB_MOOMOO, "moomoo", ledgers_sib
+    )
+    assert only_orb == set()
+    assert nok in exclude_orb
+
+    t_spy, t_ibm = "SPY261016C00500000", "IBM261016C00250000"
+    t_ledgers = {BOOK_ORB_TRADIER: set(), BOOK_MR_TRADIER: set()}
+    assert (
+        select_flatten_codes(
+            book_id=BOOK_ORB_TRADIER,
+            broker="tradier",
+            account_codes=[t_spy, t_ibm],
+            ledgers=t_ledgers,
+        )
+        == []
+    )
+    only_t, _ = flatten_symbol_filters(BOOK_ORB_TRADIER, "tradier", t_ledgers)
+    assert only_t == set()
+
+
+def test_tradier_typeerror_cannot_flatten_without_book_filters():
+    from tradier_eod_flatten import main
+
+    class ClientRejectsFilters:
+        def __init__(self):
+            self.unfiltered_calls = 0
+
+        def flatten_open_positions(
+            self,
+            scope="options",
+            dry_run=False,
+            sleep_fn=None,
+            sleep_between_orders=0.0,
+        ):
+            self.unfiltered_calls += 1
+            return {
+                "planned": 2,
+                "failures": 0,
+                "dry_run": True,
+                "results": [
+                    {"symbol": "SPY261016C00500000", "status": "ok"},
+                    {"symbol": "IBM261016C00250000", "status": "ok"},
+                ],
+            }
+
+    client = ClientRejectsFilters()
+    code = main(["--dry-run", "--sleep-between-orders", "0"], client=client)
+    assert code == 1
+    assert client.unfiltered_calls == 0
+    src = (BACKEND / "tradier_eod_flatten.py").read_text(encoding="utf-8")
+    assert "flatten_open_positions(**flatten_kwargs)" not in src
+    assert "book_filters_required" in src
+
+
+def test_gitignore_keeps_health_snapshots_and_paper_book_ledgers():
+    text = (BACKEND.parent / ".gitignore").read_text(encoding="utf-8")
+    assert "bot_health_snapshots.jsonl" in text
+    assert "backend/paper_book_ledgers/" in text

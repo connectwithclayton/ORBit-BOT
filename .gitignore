@@ -29,6 +29,7 @@ orb_bot_fabio.log
 audit_sync_scheduler.log
 trade_data.json
 backend/trade_data.json
+bot_health_snapshots.jsonl
 backend/paper_book_ledgers/
 audit_sync.jsonl
 audit_sync_state.json
