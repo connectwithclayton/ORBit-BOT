@@ -65,12 +65,16 @@ from fabio_live.orders import OrderManager
 from fabio_live.paper_books import (
     BOOK_MR_MOOMOO,
     BOOK_ORB_MOOMOO,
+    BOOK_ORB_TRADIER,
     PAPER_BOOK_STARTING_BALANCE,
     PaperBookRegistry,
+    flatten_sidecar_reason,
     make_mr_executor_for_book,
     mirror_orb_fill_to_tradier_book,
     new_isolated_circuit,
     try_bind_tradier_books,
+    utc_now_iso,
+    write_primary_last_flatten,
 )
 from fabio_live.regime import MarketRegime
 from fabio_live.signals import SignalEngine
@@ -1881,10 +1885,59 @@ class ORBBot:
             sym, direction, reason, float(pnl), qty_final, pnl_final
         )
 
+    def _paper_book_sidecar_dir(self):
+        books = getattr(self, "_paper_books", None)
+        if books is None:
+            return None
+        for rt in books.all_runtimes():
+            if rt.ledger.directory is not None:
+                return rt.ledger.directory
+        return None
+
+    def _record_primary_flatten(
+        self,
+        book_id: str,
+        *,
+        started_at_utc: str,
+        planned: int,
+        failures: int,
+        selected_codes_count: int | None = None,
+        reason: str | None = None,
+        exit_code: int | None = None,
+    ) -> None:
+        selected = (
+            int(selected_codes_count)
+            if selected_codes_count is not None
+            else int(planned)
+        )
+        token = reason or flatten_sidecar_reason(
+            selected_codes_count=selected,
+        )
+        code = int(exit_code) if exit_code is not None else (3 if failures else 0)
+        try:
+            write_primary_last_flatten(
+                book_id=book_id,
+                started_at_utc=started_at_utc,
+                finished_at_utc=utc_now_iso(),
+                dry_run=False,
+                exit_code=code,
+                planned=int(planned),
+                failures=int(failures),
+                selected_codes_count=selected,
+                reason=token,
+                directory=self._paper_book_sidecar_dir(),
+            )
+        except Exception as exc:
+            print(f"  ⚠  last-flatten sidecar skipped [{book_id}]: {exc}")
+
     def eod_close_all(self):
         print("\n  [EOD] Closing all positions...")
+        started = utc_now_iso()
+        orb_planned = 0
+        orb_failures = 0
         for sym in list(self.signals.keys()):
             direction = self.signals[sym]
+            orb_planned += 1
             result = self.order_mgr.exit_result(sym, reason="EOD")
             if result.get("success"):
                 pnl = float(result.get("pnl", 0.0))
@@ -1892,20 +1945,30 @@ class ORBBot:
                 self._log_exit(sym, direction, "EOD", pnl, result)
                 self.signals.pop(sym, None)
             else:
+                orb_failures += 1
                 self.ops.alert(
                     f"⚠️ <b>EOD exit failed [{sym}]</b>\nerror={result.get('error', 'unknown')}"
                 )
                 self.ops.log_alert(
                     "EXIT_FAIL", f"{sym} EOD exit failed: {result.get('error', 'unknown')}", sym
                 )
+        self._record_primary_flatten(
+            BOOK_ORB_MOOMOO,
+            started_at_utc=started,
+            planned=orb_planned,
+            failures=orb_failures,
+        )
 
         # Flatten leftover MR-tagged tracked positions only (hard isolate).
         # Each MR book uses its own OrderManager. Never market-close unmarked
         # / ORB legs from this loop. No exercise.
         from fabio_live.mr_paper import is_mr_position
 
+        mr_stats: dict[str, dict[str, int]] = {}
         for mr_ex in self._iter_mr_executors():
             leftover_mgr = getattr(mr_ex, "order_mgr", None)
+            book_id = str(getattr(mr_ex, "book_id", "") or "").strip() or BOOK_MR_MOOMOO
+            stats = mr_stats.setdefault(book_id, {"planned": 0, "failures": 0})
             if leftover_mgr is None:
                 continue
             leftover = list(getattr(leftover_mgr, "positions", {}) or {})
@@ -1917,6 +1980,7 @@ class ORBBot:
                 if not is_mr_position(pos, owned=owned):
                     continue
                 direction = pos.get("direction", "")
+                stats["planned"] += 1
                 result = leftover_mgr.exit_result(sym, reason="EOD")
                 if result.get("success"):
                     pnl = float(result.get("pnl", 0.0))
@@ -1924,17 +1988,33 @@ class ORBBot:
                     mr_ex.release(sym)
                     print(f"  [EOD] Flattened leftover MR {sym} {direction} pnl={pnl:+.0f}")
                 else:
+                    stats["failures"] += 1
                     self.ops.alert(
                         f"⚠️ <b>EOD leftover exit failed [{sym}]</b>\n"
                         f"error={result.get('error', 'unknown')}"
                     )
+        for book_id, stats in mr_stats.items():
+            self._record_primary_flatten(
+                book_id,
+                started_at_utc=started,
+                planned=stats["planned"],
+                failures=stats["failures"],
+            )
         self._sync_mr_paper_book_ledgers()
 
         books = getattr(self, "_paper_books", None)
         if books is not None:
-            orb_t = books.get("orb-tradier")
+            orb_t = books.get(BOOK_ORB_TRADIER)
             if orb_t is not None:
-                orb_t.flatten_tracked(reason="EOD")
+                results = orb_t.flatten_tracked(reason="EOD")
+                planned = len(results)
+                failures = sum(1 for row in results if not row.get("success"))
+                self._record_primary_flatten(
+                    BOOK_ORB_TRADIER,
+                    started_at_utc=started,
+                    planned=planned,
+                    failures=failures,
+                )
 
         print("\n  [EOD] Sweeping Moomoo account for any remaining open positions...")
         protected = set()

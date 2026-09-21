@@ -78,13 +78,37 @@ try:
     )
 except ImportError:
     OpenSecTradeContext = None  # type: ignore
+    OrderType = None  # type: ignore
+    RET_OK = 0
+    SecurityFirm = None  # type: ignore
+    TrdMarket = None  # type: ignore
+
+    class TrdEnv:  # type: ignore
+        REAL = "REAL"
+        SIMULATE = "SIMULATE"
+
+    class TrdSide:  # type: ignore
+        BUY = "BUY"
+        SELL = "SELL"
+
+    class OrderType:  # type: ignore
+        MARKET = "MARKET"
 
 from fabio_live.paper_books import (
     BOOK_ORB_MOOMOO,
+    BROKER_MOOMOO,
     MOOMOO_BOOK_IDS,
+    REASON_ABORTED_WINDOW,
+    REASON_BOOK_EMPTY,
+    REASON_ERROR,
+    REASON_FLATTEN,
+    REASON_NO_CLOSABLE,
     default_flatten_book_id,
+    ledger_directory,
     load_all_ledgers,
     select_flatten_codes,
+    utc_now_iso,
+    write_failsafe_last_flatten,
 )
 from paper_pin import enforce_paper_trading_pin, resolve_moomoo_trd_env_name
 
@@ -103,8 +127,8 @@ def _looks_like_us_listed_option(code: str) -> bool:
 def _closing_side(position_side: str):
     ps = (position_side or "").upper()
     if ps == "SHORT":
-        return TrdSide.BUY
-    return TrdSide.SELL
+        return getattr(TrdSide, "BUY", "BUY")
+    return getattr(TrdSide, "SELL", "SELL")
 
 
 def _parse_security_firm(name: str):
@@ -134,6 +158,7 @@ def _log(
     decision: str | None = None,
     reason_code: str | None = None,
     latency_ms: float | None = None,
+    book_id: str | None = None,
     **extra,
 ) -> None:
     if _LOG_CFG.get("format") == "jsonl":
@@ -151,6 +176,8 @@ def _log(
             obj["reason_code"] = reason_code
         if latency_ms is not None:
             obj["latency_ms"] = round(latency_ms, 3)
+        if book_id is not None:
+            obj["book_id"] = book_id
         obj["level"] = "error" if err else "info"
         if extra:
             obj["extra"] = extra
@@ -332,92 +359,127 @@ def _xnys_failsafe_cutoff_ok(now_et: datetime) -> tuple[bool, str]:
     return False, f"before_failsafe_cutoff want_>={cutoff.isoformat()}"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None, *, trd_ctx=None) -> int:
+    """Run the Moomoo fail-safe. ``trd_ctx`` is a test seam (no OpenD)."""
     _load_env_file()
     parser = build_arg_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     _LOG_CFG["format"] = args.log_format
-    enforce_paper_trading_pin(args.trd_env)
+    book_id = getattr(args, "book", None) or BOOK_ORB_MOOMOO
+    started = utc_now_iso()
+    dry_run = bool(args.dry_run)
+    sidecar_dir = ledger_directory()
+    state: dict = {
+        "reason": REASON_ERROR,
+        "exit_code": 1,
+        "planned": 0,
+        "failures": 0,
+        "selected_codes_count": 0,
+    }
+    owns_ctx = False
+
+    def _finish(
+        code: int,
+        *,
+        reason: str,
+        planned: int | None = None,
+        failures: int | None = None,
+        selected: int | None = None,
+    ) -> int:
+        state["reason"] = reason
+        state["exit_code"] = int(code)
+        if planned is not None:
+            state["planned"] = int(planned)
+        if failures is not None:
+            state["failures"] = int(failures)
+        if selected is not None:
+            state["selected_codes_count"] = int(selected)
+        return code
 
     try:
-        from zoneinfo import ZoneInfo
-    except ImportError:
-        ZoneInfo = None  # type: ignore
+        enforce_paper_trading_pin(args.trd_env)
 
-    if args.require_after_et:
-        if ZoneInfo is None:
-            print("ERROR: zoneinfo not available; use Python 3.9+.", file=sys.stderr)
-            return 1
-        now_et = datetime.now(ZoneInfo("America/New_York"))
-        if args.legacy_fixed_cutoff_et:
-            ok = _us_weekday_after_cutoff(
-                now_et, args.cutoff_et_hour, args.cutoff_et_minute
-            )
-            if not ok:
-                print(
-                    f"Abort: --require-after-et legacy cutoff "
-                    f"now_et={now_et.isoformat()} "
-                    f"not weekday after "
-                    f"{args.cutoff_et_hour:02d}:{args.cutoff_et_minute:02d} ET.",
-                    file=sys.stderr,
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            ZoneInfo = None  # type: ignore
+
+        if args.require_after_et:
+            if ZoneInfo is None:
+                print("ERROR: zoneinfo not available; use Python 3.9+.", file=sys.stderr)
+                return _finish(1, reason=REASON_ERROR)
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            if args.legacy_fixed_cutoff_et:
+                ok = _us_weekday_after_cutoff(
+                    now_et, args.cutoff_et_hour, args.cutoff_et_minute
                 )
-                return 4
-        else:
-            ok, detail = _xnys_failsafe_cutoff_ok(now_et)
-            if not ok:
-                if detail.startswith("xnys_calendar_unavailable"):
-                    ok2 = _us_weekday_after_cutoff(
-                        now_et, args.cutoff_et_hour, args.cutoff_et_minute
-                    )
-                    if ok2:
-                        print(
-                            "WARN: XNYS calendar unavailable; using legacy "
-                            f"{args.cutoff_et_hour:02d}:{args.cutoff_et_minute:02d} ET cutoff.",
-                            file=sys.stderr,
-                        )
-                    else:
-                        print(
-                            f"Abort: --require-after-et {detail}; legacy cutoff also blocked.",
-                            file=sys.stderr,
-                        )
-                        return 4
-                else:
+                if not ok:
                     print(
-                        f"Abort: --require-after-et ({detail}) "
-                        f"now_et={now_et.isoformat()}.",
+                        f"Abort: --require-after-et legacy cutoff "
+                        f"now_et={now_et.isoformat()} "
+                        f"not weekday after "
+                        f"{args.cutoff_et_hour:02d}:{args.cutoff_et_minute:02d} ET.",
                         file=sys.stderr,
                     )
-                    return 4
+                    return _finish(4, reason=REASON_ABORTED_WINDOW)
+            else:
+                ok, detail = _xnys_failsafe_cutoff_ok(now_et)
+                if not ok:
+                    if detail.startswith("xnys_calendar_unavailable"):
+                        ok2 = _us_weekday_after_cutoff(
+                            now_et, args.cutoff_et_hour, args.cutoff_et_minute
+                        )
+                        if ok2:
+                            print(
+                                "WARN: XNYS calendar unavailable; using legacy "
+                                f"{args.cutoff_et_hour:02d}:{args.cutoff_et_minute:02d} ET cutoff.",
+                                file=sys.stderr,
+                            )
+                        else:
+                            print(
+                                f"Abort: --require-after-et {detail}; legacy cutoff also blocked.",
+                                file=sys.stderr,
+                            )
+                            return _finish(4, reason=REASON_ABORTED_WINDOW)
+                    else:
+                        print(
+                            f"Abort: --require-after-et ({detail}) "
+                            f"now_et={now_et.isoformat()}.",
+                            file=sys.stderr,
+                        )
+                        return _finish(4, reason=REASON_ABORTED_WINDOW)
 
-    if OpenSecTradeContext is None:
-        print(
-            "ERROR: moomoo package not installed. pip install -r backend/requirements-moomoo.txt",
-            file=sys.stderr,
-        )
-        return 1
+        if trd_ctx is None:
+            if OpenSecTradeContext is None:
+                print(
+                    "ERROR: moomoo package not installed. "
+                    "pip install -r backend/requirements-moomoo.txt",
+                    file=sys.stderr,
+                )
+                return _finish(1, reason=REASON_ERROR)
+            trd_env = TrdEnv.REAL if args.trd_env == "REAL" else TrdEnv.SIMULATE
+            sec_firm = _parse_security_firm(args.security_firm)
+            trd_ctx = OpenSecTradeContext(
+                filter_trdmarket=TrdMarket.NONE,
+                host=args.host,
+                port=args.port,
+                security_firm=sec_firm,
+            )
+            owns_ctx = True
+        else:
+            trd_env = TrdEnv.REAL if args.trd_env == "REAL" else TrdEnv.SIMULATE
 
-    trd_env = TrdEnv.REAL if args.trd_env == "REAL" else TrdEnv.SIMULATE
-    sec_firm = _parse_security_firm(args.security_firm)
-
-    trd_ctx = OpenSecTradeContext(
-        filter_trdmarket=TrdMarket.NONE,
-        host=args.host,
-        port=args.port,
-        security_firm=sec_firm,
-    )
-
-    try:
         if trd_env == TrdEnv.REAL and not args.dry_run:
             if not args.password:
                 print(
                     "ERROR: live trading needs --password or MOOMOO_TRADE_PASSWORD for unlock_trade.",
                     file=sys.stderr,
                 )
-                return 1
+                return _finish(1, reason=REASON_ERROR)
             ret, msg = trd_ctx.unlock_trade(password=args.password)
             if ret != RET_OK:
                 print(f"unlock_trade failed: {msg}", file=sys.stderr)
-                return 1
+                return _finish(1, reason=REASON_ERROR)
 
         t0 = time.perf_counter()
         ret, pos = trd_ctx.position_list_query(
@@ -433,39 +495,53 @@ def main() -> int:
                 event="position_query_error",
                 reason_code="initial_query_failed",
                 latency_ms=query_ms,
-                extra={"broker_msg": str(pos)},
+                book_id=book_id,
+                extra={"broker_msg": str(pos), "book": book_id},
             )
-            return 1
+            return _finish(1, reason=REASON_ERROR)
 
         if pos is None or getattr(pos, "empty", True):
             _log(
                 "No rows returned from broker (empty book).",
                 event="book_empty",
                 latency_ms=query_ms,
+                book_id=book_id,
+                extra={"book": book_id, "book_id": book_id},
             )
-            return 0
+            return _finish(
+                0,
+                reason=REASON_BOOK_EMPTY,
+                planned=0,
+                selected=0,
+            )
 
         rows = _extract_closable_rows(pos, args.scope)
-        book_id = getattr(args, "book", None) or BOOK_ORB_MOOMOO
         ledgers = load_all_ledgers()
         keep = set(
             select_flatten_codes(
                 book_id=book_id,
-                broker="moomoo",
+                broker=BROKER_MOOMOO,
                 account_codes=[r[0] for r in rows],
                 ledgers=ledgers,
             )
         )
         rows = [r for r in rows if r[0] in keep]
+        selected_n = len(rows)
 
         if not rows:
             _log(
                 "No closable positions after filters (refresh_cache=True).",
                 event="no_closable",
                 latency_ms=query_ms,
-                extra={"scope": args.scope, "book": book_id},
+                book_id=book_id,
+                extra={"scope": args.scope, "book": book_id, "book_id": book_id},
             )
-            return 0
+            return _finish(
+                0,
+                reason=REASON_NO_CLOSABLE,
+                planned=0,
+                selected=0,
+            )
 
         _log(
             f"Found {len(rows)} position(s) to flatten "
@@ -473,6 +549,7 @@ def main() -> int:
             event="closable_list",
             decision="flatten",
             latency_ms=query_ms,
+            book_id=book_id,
             extra={
                 "count": len(rows),
                 "scope": args.scope,
@@ -494,8 +571,19 @@ def main() -> int:
             )
 
         if args.dry_run:
-            _log("Dry run: no orders sent.", event="dry_run", decision="noop")
-            return 0
+            _log(
+                "Dry run: no orders sent.",
+                event="dry_run",
+                decision="noop",
+                book_id=book_id,
+                extra={"book": book_id, "book_id": book_id},
+            )
+            return _finish(
+                0,
+                reason=REASON_FLATTEN,
+                planned=selected_n,
+                selected=selected_n,
+            )
 
         run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + f"_{os.getpid()}"
         order_seq = 0
@@ -606,19 +694,57 @@ def main() -> int:
                 )
             time.sleep(max(0.0, args.sleep_between_orders))
 
-        _log("Done.", event="run_complete", decision="flatten")
+        _log(
+            "Done.",
+            event="run_complete",
+            decision="flatten",
+            book_id=book_id,
+            extra={"book": book_id, "book_id": book_id},
+        )
         if place_order_failures:
             _log(
                 f"Exiting with code 3: {place_order_failures} place_order failure(s)",
                 event="run_partial_failure",
                 err=True,
                 reason_code="place_order_failed",
-                extra={"place_order_failures": place_order_failures},
+                book_id=book_id,
+                extra={
+                    "place_order_failures": place_order_failures,
+                    "book": book_id,
+                },
             )
-            return 3
-        return 0
+            return _finish(
+                3,
+                reason=REASON_FLATTEN,
+                planned=selected_n,
+                failures=place_order_failures,
+                selected=selected_n,
+            )
+        return _finish(
+            0,
+            reason=REASON_FLATTEN,
+            planned=selected_n,
+            failures=0,
+            selected=selected_n,
+        )
+    except Exception:
+        _finish(1, reason=REASON_ERROR)
+        raise
     finally:
-        trd_ctx.close()
+        write_failsafe_last_flatten(
+            book_id=book_id,
+            started_at_utc=started,
+            finished_at_utc=utc_now_iso(),
+            dry_run=dry_run,
+            exit_code=int(state["exit_code"]),
+            planned=int(state["planned"]),
+            failures=int(state["failures"]),
+            selected_codes_count=int(state["selected_codes_count"]),
+            reason=str(state["reason"]),
+            directory=sidecar_dir,
+        )
+        if owns_ctx and trd_ctx is not None:
+            trd_ctx.close()
 
 
 if __name__ == "__main__":

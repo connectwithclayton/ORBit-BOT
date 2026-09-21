@@ -30,7 +30,9 @@ audit_sync_scheduler.log
 trade_data.json
 backend/trade_data.json
 bot_health_snapshots.jsonl
+# Per-book ledgers and last-flatten sidecars (<book_id>.last_flatten.json)
 backend/paper_book_ledgers/
+*.last_flatten.json
 audit_sync.jsonl
 audit_sync_state.json
 .sync_audit_calendar_eod_date
