@@ -33,19 +33,14 @@ from pathlib import Path
 
 from manual_position_omissions import is_omitted_dashboard_close_trade
 
-try:
-    from fabio_live.paper_books import is_allowed_open_position_notes as _book_notes_ok
-except ImportError:  # pragma: no cover - dashboard-only hosts
-    def _book_notes_ok(notes: str) -> bool:
-        n = str(notes or "").strip()
-        if n.startswith("broker code=") or n == "moomoo_paper_fifo":
-            return True
-        return False
-
-
-def is_allowed_open_position_notes(notes: str) -> bool:
-    """Open-row notes: preserve ``moomoo_paper_fifo`` plus other paper-book tags."""
-    return _book_notes_ok(notes)
+from paper_book_dashboard import (
+    PAPER_DESK_HEADER,
+    annotate_open_positions_with_book,
+    dashboard_books_payload,
+    is_allowed_open_position_notes,
+    live_status_books_payload,
+    read_latest_health_snapshot,
+)
 
 _FABIO_ROOT = Path(__file__).resolve().parent.parent
 DATA_FILE   = str(_FABIO_ROOT / "backend" / "trade_data.json")
@@ -498,6 +493,11 @@ def tradier_position_records_to_dashboard_opens(
 TEMPLATE_PATH = str(_FABIO_ROOT / "frontend" / "templates" / "live_dashboard_template.html")
 LIVE_STATUS_FILE = str(_FABIO_ROOT / "frontend" / "bot_live_status.json")
 OPS_FEED_FILE = str(_FABIO_ROOT / "frontend" / "bot_ops_feed.json")
+try:
+    from fabio_live.constants import HEALTH_SNAPSHOT_PATH as _HEALTH_JSONL
+except ImportError:  # pragma: no cover - dashboard-only hosts
+    _HEALTH_JSONL = str(_FABIO_ROOT / "bot_health_snapshots.jsonl")
+HEALTH_JSONL_FILE = _HEALTH_JSONL
 STORY_LINK_HTML = (
     '<a class="header-btn" href="fabio_scrollytelling.html" '
     'title="Scroll-driven operating picture">Story</a>'
@@ -540,6 +540,7 @@ def live_status_from_health(
     ops = snap.get("ops") if isinstance(snap.get("ops"), dict) else {}
     circuit = snap.get("circuit") if isinstance(snap.get("circuit"), dict) else {}
     checked = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    book_payload = live_status_books_payload(snap)
     return {
         "running": bool(running),
         "paused": bool(bot_state.get("paused")),
@@ -556,6 +557,8 @@ def live_status_from_health(
             "ops_queue_max": ops.get("queue_max"),
         },
         "health": snap,
+        "books": book_payload["books"],
+        "health_ts": book_payload["health_ts"],
     }
 
 
@@ -866,8 +869,19 @@ class DashboardWriter:
         buy_hold_overlay = _build_buy_hold_overlay_from_daily(
             list(self._data.get("daily") or [])
         )
+        health_snap = read_latest_health_snapshot(HEALTH_JSONL_FILE)
+        books = dashboard_books_payload(health_snap)
+        health_ts = None
+        if isinstance(health_snap, dict):
+            health_ts = health_snap.get("ts")
         html_payload = {
             **self._data,
+            "open_positions": annotate_open_positions_with_book(
+                self._data.get("open_positions")
+            ),
+            "books": books,
+            "health_ts": health_ts,
+            "desk_header": PAPER_DESK_HEADER,
             "equity_modeled_subtitle": _eq_sub,
             "buy_hold_overlay": buy_hold_overlay,
             "beta_identity": _beta,

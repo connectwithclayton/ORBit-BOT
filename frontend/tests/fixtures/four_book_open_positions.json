@@ -1,0 +1,59 @@
+{
+  "open_positions": [
+    {
+      "date": "2026-09-21",
+      "symbol": "SPY",
+      "direction": "CALL",
+      "entry_time": "09:46:00",
+      "entry_price": 1.25,
+      "contracts": 2,
+      "vix": 18.0,
+      "or_atr_pct": 12,
+      "notes": "source=moomoo_paper"
+    },
+    {
+      "date": "2026-09-21",
+      "symbol": "QQQ",
+      "direction": "PUT",
+      "entry_time": "09:47:00",
+      "entry_price": 0.9,
+      "contracts": 1,
+      "vix": 18.0,
+      "or_atr_pct": 10,
+      "notes": "source=tradier_paper"
+    },
+    {
+      "date": "2026-09-21",
+      "symbol": "NOK",
+      "direction": "CALL",
+      "entry_time": "09:48:00",
+      "entry_price": 0.4,
+      "contracts": 5,
+      "vix": 18.0,
+      "or_atr_pct": 8,
+      "notes": "source=mr"
+    },
+    {
+      "date": "2026-09-21",
+      "symbol": "IBM",
+      "direction": "PUT",
+      "entry_time": "09:49:00",
+      "entry_price": 0.55,
+      "contracts": 3,
+      "vix": 18.0,
+      "or_atr_pct": 9,
+      "notes": "source=mr_tradier"
+    },
+    {
+      "date": "2026-09-21",
+      "symbol": "NVDA",
+      "direction": "CALL",
+      "entry_time": "09:50:00",
+      "entry_price": 2.1,
+      "contracts": 1,
+      "vix": 18.0,
+      "or_atr_pct": 11,
+      "notes": "broker code=US.NVDA260921C00180000"
+    }
+  ]
+}

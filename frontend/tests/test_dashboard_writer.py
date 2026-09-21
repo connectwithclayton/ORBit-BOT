@@ -473,6 +473,7 @@ def test_write_html_uses_file_template_preserves_ops_and_data(tmp_path):
         patch("dashboard_writer.DATA_FILE", str(data_file)),
         patch("dashboard_writer.DASH_LOCAL", str(live_html)),
         patch("dashboard_writer.DASH_MAIN", str(main_html)),
+        patch("dashboard_writer.HEALTH_JSONL_FILE", str(tmp_path / "missing_health.jsonl")),
     ):
         w = DashboardWriter()
         w._write_html()
@@ -485,6 +486,9 @@ def test_write_html_uses_file_template_preserves_ops_and_data(tmp_path):
     assert "fabio_scrollytelling.html" in html
     assert "python3 -m http.server" in html
     assert "fabio serve" not in html
+    assert "Four paper books · $10k each · paper only" in html
+    for bid in ("orb-moomoo", "orb-tradier", "mr-moomoo", "mr-tradier"):
+        assert f'data-book-id="{bid}"' in html
     data_line = next(ln for ln in html.splitlines() if ln.startswith("const DATA = "))
     raw = data_line[len("const DATA = ") :]
     if raw.endswith(";"):
