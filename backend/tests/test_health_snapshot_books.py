@@ -25,8 +25,10 @@ from fabio_live.paper_books import (
     UnknownPaperBook,
     enabled_paper_book_ids,
     init_book_circuit,
+    last_flatten_path,
     last_flatten_sidecar_path,
     paper_books_health_map,
+    write_failsafe_last_flatten,
 )
 import verify_phase2_reliability as gate
 
@@ -207,6 +209,7 @@ def test_last_flatten_read_if_exists_does_not_invent_writer(tmp_path):
         "layer": "failsafe",
     }
     path = last_flatten_sidecar_path(BOOK_MR_MOOMOO, tmp_path)
+    assert path == last_flatten_path(BOOK_MR_MOOMOO, tmp_path)
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     books = paper_books_health_map(
         None, enabled_ids=(BOOK_ORB_MOOMOO,), ledger_dir=tmp_path
@@ -222,14 +225,42 @@ def test_last_flatten_read_if_exists_does_not_invent_writer(tmp_path):
     assert "planned" not in found
     for bid in (BOOK_ORB_MOOMOO, BOOK_ORB_TRADIER, BOOK_MR_TRADIER):
         assert books[bid]["last_flatten"] is None
-    # Health is read-only: no flatten writer lives in paper_books.
+    # Health still only reads. SHIP-008 owns write_last_flatten / failsafe writers.
     src = Path(__file__).resolve().parents[1] / "fabio_live" / "paper_books.py"
     text = src.read_text(encoding="utf-8")
-    assert "This module does not write flatten last-run files" in text
-    assert "last_flatten_sidecar_path(" in text
+    assert "def write_last_flatten(" in text
+    assert "Health never writes" in text
     assert ".write_text(" not in text.split("def last_flatten_sidecar_path")[1].split(
         "def read_last_flatten_summary"
     )[0]
+
+
+def test_health_map_reads_ship008_failsafe_sidecar(tmp_path):
+    written = write_failsafe_last_flatten(
+        book_id=BOOK_MR_MOOMOO,
+        started_at_utc="2026-09-21T19:50:00Z",
+        finished_at_utc="2026-09-21T19:50:02Z",
+        dry_run=True,
+        exit_code=0,
+        planned=1,
+        failures=0,
+        selected_codes_count=1,
+        reason="flatten",
+        directory=tmp_path,
+    )
+    assert written is not None
+    books = paper_books_health_map(
+        None, enabled_ids=(BOOK_ORB_MOOMOO,), ledger_dir=tmp_path
+    )
+    _assert_four_book_shape(books)
+    found = books[BOOK_MR_MOOMOO]["last_flatten"]
+    assert found is not None
+    assert found["book_id"] == BOOK_MR_MOOMOO
+    assert found["layer"] == "failsafe"
+    assert found["script"] == "moomoo_eod_failsafe.py"
+    assert found["planned_count"] == 1
+    assert found["failure_count"] == 0
+    assert books[BOOK_ORB_MOOMOO]["last_flatten"] is None
 
 
 def _ops_health() -> dict:

@@ -27,7 +27,6 @@ TRADIER_PAPER_BOOKS_ENV = "FABIO_TRADIER_PAPER_BOOKS"
 LEDGER_DIR_ENV = "FABIO_PAPER_BOOK_LEDGER_DIR"
 # Health JSONL: never dump full code lists (size). Preview is sorted, truncated.
 LEDGER_CODES_PREVIEW_LIMIT = 8
-LAST_FLATTEN_SIDECAR_SUFFIX = ".last_flatten.json"
 _LAST_FLATTEN_SUMMARY_KEYS = (
     "book_id",
     "broker",
@@ -84,6 +83,7 @@ LAST_FLATTEN_REASONS = frozenset(
     }
 )
 LAST_FLATTEN_SUFFIX = ".last_flatten.json"
+LAST_FLATTEN_SIDECAR_SUFFIX = LAST_FLATTEN_SUFFIX  # SHIP-007 alias of SHIP-008 path
 
 
 @dataclass(frozen=True)
@@ -206,27 +206,19 @@ def modeled_book_equity(
 def last_flatten_sidecar_path(
     book_id: str, directory: str | Path | None = None
 ) -> Path:
-    """Sibling of ``<book_id>.json``: ``<book_id>.last_flatten.json``.
-
-    SHIP-008 (parallel) may write this sidecar. Health only reads if present.
-    This module does not write flatten last-run files.
-    """
-    spec = get_book(book_id)
-    return ledger_directory(directory) / f"{spec.book_id}{LAST_FLATTEN_SIDECAR_SUFFIX}"
+    """Alias of ``last_flatten_path``. Health reads; SHIP-008 writers own the file."""
+    return last_flatten_path(book_id, directory)
 
 
 def read_last_flatten_summary(
     book_id: str, directory: str | Path | None = None
 ) -> dict[str, Any] | None:
-    """Compact last-flatten summary, or None when the sidecar is absent/unreadable."""
-    path = last_flatten_sidecar_path(book_id, directory)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
+    """Compact last-flatten summary, or None when the sidecar is absent/unreadable.
+
+    Uses SHIP-008 ``read_last_flatten`` (book_id-checked). Health never writes.
+    """
+    data = read_last_flatten(book_id, directory)
+    if not data:
         return None
     summary: dict[str, Any] = {}
     for key in _LAST_FLATTEN_SUMMARY_KEYS:
