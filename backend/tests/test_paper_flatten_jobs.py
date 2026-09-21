@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -325,3 +327,67 @@ def test_eod_close_all_does_not_invoke_failsafe():
 def test_map_exit_cli(capsys):
     assert flatten_jobs_main(["map-exit", "4"]) == 0
     assert capsys.readouterr().out.strip() == "0"
+
+
+def test_moomoo_calendar_gate_import_error_is_xnys_unavailable(monkeypatch):
+    import moomoo_eod_failsafe as moomoo_fs
+
+    monkeypatch.setitem(sys.modules, "fabio_live.calendar_gate", None)
+    ok, detail = moomoo_fs._xnys_failsafe_cutoff_ok(datetime(2025, 10, 1, 16, 0))
+    assert ok is False
+    assert detail.startswith("xnys_calendar_unavailable:")
+
+
+def test_moomoo_require_after_et_import_error_uses_legacy_cutoff(monkeypatch, tmp_path):
+    monkeypatch.setenv(LEDGER_DIR_ENV, str(tmp_path))
+    monkeypatch.setitem(sys.modules, "fabio_live.calendar_gate", None)
+    monkeypatch.setattr(
+        "moomoo_eod_failsafe._us_weekday_after_cutoff",
+        lambda *_a, **_k: True,
+    )
+    ctx = FakeMoomooCtx([])
+    code = moomoo_main(
+        ["--require-after-et", "--book", "orb-moomoo", "--dry-run"],
+        trd_ctx=ctx,
+    )
+    assert code == 0
+    assert ctx.place_calls == []
+
+
+def test_tradier_calendar_gate_import_error_is_xnys_unavailable_and_weekday_fallback(
+    monkeypatch,
+):
+    import tradier_eod_flatten as tradier_fs
+
+    monkeypatch.setitem(sys.modules, "fabio_live.calendar_gate", None)
+    ok, detail = tradier_fs._xnys_failsafe_cutoff_ok(datetime(2025, 10, 1, 16, 0))
+    assert ok is False
+    assert detail.startswith("xnys_calendar_unavailable:")
+
+    tz = pytest.importorskip("zoneinfo").ZoneInfo("America/New_York")
+    after = datetime(2025, 10, 1, 16, 0, tzinfo=tz)
+    before = datetime(2025, 10, 1, 10, 0, tzinfo=tz)
+    weekend = datetime(2025, 10, 4, 16, 0, tzinfo=tz)
+    assert tradier_fs._us_weekday_after_cutoff(after, 15, 45) is True
+    assert tradier_fs._us_weekday_after_cutoff(before, 15, 45) is False
+    assert tradier_fs._us_weekday_after_cutoff(weekend, 15, 45) is False
+
+
+def test_tradier_require_after_et_import_error_uses_legacy_cutoff(monkeypatch, tmp_path):
+    monkeypatch.setenv(LEDGER_DIR_ENV, str(tmp_path))
+    monkeypatch.setitem(sys.modules, "fabio_live.calendar_gate", None)
+    monkeypatch.setattr(
+        "tradier_eod_flatten._us_weekday_after_cutoff",
+        lambda *_a, **_k: True,
+    )
+    session = FakeSession(
+        [FakeResp(200, {"positions": {"position": []}})]
+    )
+    client = _client(session)
+    code = tradier_main(
+        ["--require-after-et", "--book", "orb-tradier", "--dry-run"],
+        client=client,
+    )
+    assert code == 0
+    posts = [c for c in session.calls if c.get("method") == "POST"]
+    assert posts == []

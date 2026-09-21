@@ -339,8 +339,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _xnys_failsafe_cutoff_ok(now_et: datetime) -> tuple[bool, str]:
-    """After session_close - FAILSAFE_MINUTES on NYSE trading days; else explains abort."""
-    from fabio_live.calendar_gate import xnys_failsafe_cutoff_ok
+    """After session_close - FAILSAFE_MINUTES on NYSE trading days; else explains abort.
+
+    ImportError on calendar_gate (or its eager deps) must return
+    ``xnys_calendar_unavailable:...`` so ``--require-after-et`` can fall back
+    to the local Mon–Fri cutoff instead of hard-erroring.
+    """
+    try:
+        from fabio_live.calendar_gate import xnys_failsafe_cutoff_ok
+    except ImportError as e:
+        return False, f"xnys_calendar_unavailable:{e}"
 
     return xnys_failsafe_cutoff_ok(now_et)
 

@@ -154,13 +154,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _us_weekday_after_cutoff(now_et: datetime, hour: int, minute: int) -> bool:
-    from fabio_live.calendar_gate import us_weekday_after_cutoff
-
+    """Mon–Fri + fixed ET clock. Local fallback if calendar_gate cannot import."""
+    try:
+        from fabio_live.calendar_gate import us_weekday_after_cutoff
+    except ImportError:
+        if now_et.weekday() >= 5:
+            return False
+        cutoff = now_et.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return now_et >= cutoff
     return us_weekday_after_cutoff(now_et, hour, minute)
 
 
 def _xnys_failsafe_cutoff_ok(now_et: datetime) -> tuple[bool, str]:
-    from fabio_live.calendar_gate import xnys_failsafe_cutoff_ok
+    """XNYS fail-safe window. ImportError → xnys_calendar_unavailable (legacy path)."""
+    try:
+        from fabio_live.calendar_gate import xnys_failsafe_cutoff_ok
+    except ImportError as e:
+        return False, f"xnys_calendar_unavailable:{e}"
 
     return xnys_failsafe_cutoff_ok(now_et)
 
