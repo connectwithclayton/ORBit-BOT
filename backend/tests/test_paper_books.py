@@ -796,3 +796,97 @@ def test_sync_unions_om_fills_onto_persisted_codes(tmp_path):
     disk = PaperBookLedger(BOOK_MR_MOOMOO, directory=tmp_path)
     assert disk.load() is True
     assert disk.codes == {nok, ibm}
+
+
+def test_tradier_flatten_tracked_empty_om_does_not_wipe_disk(tmp_path):
+    occ = "SPY261016C00500000"
+    persisted = PaperBookLedger(BOOK_ORB_TRADIER, directory=tmp_path)
+    persisted.add(occ)
+    assert persisted.save() is True
+
+    session = FakeSession()
+    mgr = TradierOrderManager(
+        _client(session), source="tradier_paper", book_id=BOOK_ORB_TRADIER
+    )
+    assert mgr.positions == {}
+    rt = PaperBookRegistry().bind(
+        BOOK_ORB_TRADIER, order_mgr=mgr, ledger_dir=tmp_path
+    )
+    assert occ in rt.ledger.codes
+    assert rt.cb.portfolio_at_open == PAPER_BOOK_STARTING_BALANCE == 10_000.0
+    assert rt.flatten_tracked(reason="EOD") == []
+    assert session.calls == []
+    assert occ in rt.ledger.codes
+    disk = PaperBookLedger(BOOK_ORB_TRADIER, directory=tmp_path)
+    assert disk.load() is True
+    assert occ in disk.codes
+    tables = load_all_ledgers(tmp_path)
+    assert occ in tables[BOOK_ORB_TRADIER]
+    assert select_flatten_codes(
+        book_id=BOOK_ORB_TRADIER,
+        broker="tradier",
+        account_codes=[occ],
+        ledgers=tables,
+    ) == [occ]
+
+
+def test_eod_tradier_books_empty_om_does_not_wipe_ledgers(tmp_path, monkeypatch):
+    import pandas as pd
+    from fabio_live.bot import ORBBot
+
+    monkeypatch.setenv("FABIO_TRADIER_PAPER_BOOKS", "1")
+    occ = "SPY261016C00500000"
+    mr_occ = "IBM261016C00250000"
+    for book_id, code in ((BOOK_ORB_TRADIER, occ), (BOOK_MR_TRADIER, mr_occ)):
+        led = PaperBookLedger(book_id, directory=tmp_path)
+        led.add(code)
+        assert led.save() is True
+
+    session = FakeSession()
+    client = _client(session)
+    sold: list[str] = []
+    orb_om = SimpleNamespace(
+        trd_env="SIMULATE",
+        positions={},
+        _sell=lambda code, qty, label="": sold.append(code),
+    )
+    reg = PaperBookRegistry()
+    reg.bind(BOOK_ORB_MOOMOO, order_mgr=orb_om, ledger_dir=tmp_path)
+    bound = try_bind_tradier_books(
+        reg, mr_paper=True, client=client, ledger_dir=tmp_path
+    )
+    assert bound == [BOOK_ORB_TRADIER, BOOK_MR_TRADIER]
+    orb_t = reg.get(BOOK_ORB_TRADIER)
+    mr_t = reg.get(BOOK_MR_TRADIER)
+    assert orb_t is not None and mr_t is not None
+    assert orb_t.order_mgr.positions == {}
+    assert mr_t.order_mgr.positions == {}
+    assert occ in orb_t.ledger.codes
+    assert mr_occ in mr_t.ledger.codes
+    assert orb_t.cb.portfolio_at_open == 10_000.0
+    assert mr_t.cb.portfolio_at_open == 10_000.0
+
+    bot = ORBBot.__new__(ORBBot)
+    bot.signals = {}
+    bot._mr_executors = []
+    bot._mr_executor = None
+    bot._paper_books = reg
+    bot.order_mgr = orb_om
+    bot.ops = SimpleNamespace(alert=lambda *_a, **_k: None, log_alert=lambda *_a, **_k: None)
+    bot.trade_ctx = SimpleNamespace(
+        position_list_query=lambda **_k: (0, pd.DataFrame())
+    )
+    bot.eod_close_all()
+
+    assert session.calls == []
+    tables = load_all_ledgers(tmp_path)
+    assert occ in tables[BOOK_ORB_TRADIER]
+    assert mr_occ in tables[BOOK_MR_TRADIER]
+    only_orb, exclude_orb = flatten_symbol_filters(
+        BOOK_ORB_TRADIER, "tradier", tables
+    )
+    assert occ in only_orb
+    assert mr_occ in exclude_orb
+    only_mr, _ = flatten_symbol_filters(BOOK_MR_TRADIER, "tradier", tables)
+    assert mr_occ in only_mr
+    assert occ not in only_mr

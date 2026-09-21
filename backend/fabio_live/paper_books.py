@@ -462,10 +462,30 @@ class PaperBookRuntime:
         self.ledger.merge_codes(om_codes)
 
     def flatten_tracked(self, *, reason: str = "EOD") -> list[dict[str, Any]]:
-        """Market-close only this book's tracked symbols. Never another book."""
+        """Market-close only this book's tracked OM symbols. Never another book.
+
+        An empty OrderManager after restart is not an intentional flatten
+        (Tradier books are not rehydrated from broker/ledger). Keep the disk
+        ledger so ``tradier_eod_flatten`` / fail-safe can still select those
+        codes. ``allow_empty`` save is only after a real close pass.
+        """
         results: list[dict[str, Any]] = []
         mgr = self.order_mgr
         positions = dict(getattr(mgr, "positions", {}) or {})
+        if not positions:
+            if not self.ledger.codes:
+                disk = PaperBookLedger(
+                    self.spec.book_id, directory=self.ledger.directory
+                )
+                if disk.load() and disk.codes:
+                    self.ledger.merge_codes(disk.codes)
+            if self.ledger.codes:
+                print(
+                    f"  ↷ flatten_tracked refused ledger clear for "
+                    f"{self.spec.book_id} — OM empty, {len(self.ledger.codes)} "
+                    "tracked code(s) remain on disk"
+                )
+            return results
         for symbol in list(positions):
             if not hasattr(mgr, "exit_result"):
                 break
@@ -474,8 +494,6 @@ class PaperBookRuntime:
                 pnl = float(result.get("pnl", 0.0) or 0.0)
                 self.cb.record_result(pnl)
             results.append(result)
-        # Intentional flatten: remaining OM codes (possibly empty) replace
-        # the ledger and may persist empty over the previous file.
         self.sync_ledger_from_positions(replace=True)
         self.ledger.save(allow_empty=True)
         return results
