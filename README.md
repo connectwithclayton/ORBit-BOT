@@ -97,6 +97,21 @@ Shared strategy tunables: [`backend/backtest/fabio/settings.py`](backend/backtes
 
 ---
 
+## Local dashboard (not Pages)
+
+The desk renders [`frontend/templates/live_dashboard_template.html`](frontend/templates/live_dashboard_template.html) into **local** `frontend/live_dashboard.html`. Do **not** commit regenerated HTML until four-book UI is ready. [`portal/push_dashboard.sh`](portal/push_dashboard.sh) no longer auto-commits tracked HTML. GitHub Pages / `orbit.clayj.app` stay unwired.
+
+Live status polling reads gitignored `frontend/bot_live_status.json` and `frontend/bot_ops_feed.json` (written from the health snapshot, beside the HTML). **`file://` will not poll** those files. Serve the `frontend/` directory:
+
+```bash
+cd frontend && python3 -m http.server 8000
+# open http://127.0.0.1:8000/live_dashboard.html
+```
+
+There is no `fabio serve` CLI in this repo.
+
+---
+
 ## Deeper docs
 
 Do not treat this README as the ops dump. Use the tree:

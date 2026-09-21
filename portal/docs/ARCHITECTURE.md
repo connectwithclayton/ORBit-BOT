@@ -29,6 +29,7 @@ flowchart TD
     AsyncOps --> Dashboard["frontend/dashboard_writer.py"]
 
     Bot --> HealthSnap["Health Snapshot JSONL"]
+    Bot --> LiveStatus["frontend/bot_live_status.json (gitignored, local HTTP)"]
     Bot --> StatusCmd["Telegram /status, /pause, /resume, /stop confirm"]
     Bot --> Reconcile["Startup broker-position reconcile gate"]
 ```

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from unittest.mock import patch
 
 from dashboard_writer import (
@@ -406,10 +408,100 @@ def test_init_strips_legacy_trade_shaped_opens(tmp_path):
 
 def test_load_normalizes_missing_open_positions_key(tmp_path):
     data_file = tmp_path / "trade_data.json"
+    live_html = tmp_path / "live_dashboard.html"
+    main_html = tmp_path / "fabio_live_dashboard.html"
     data_file.write_text(
         json.dumps({"trades": [], "daily": []}),
         encoding="utf-8",
     )
-    with patch("dashboard_writer.DATA_FILE", str(data_file)):
+    with (
+        patch("dashboard_writer.DATA_FILE", str(data_file)),
+        patch("dashboard_writer.DASH_LOCAL", str(live_html)),
+        patch("dashboard_writer.DASH_MAIN", str(main_html)),
+    ):
         w = DashboardWriter()
         assert w._data.get("open_positions") == []
+    assert not live_html.exists()  # empty load does not rewrite HTML
+
+
+_TRACKED_LIVE = Path(__file__).resolve().parents[1] / "live_dashboard.html"
+_WRITER_SRC = Path(__file__).resolve().parents[1] / "dashboard_writer.py"
+_PUSH_DASH = Path(__file__).resolve().parents[2] / "portal" / "push_dashboard.sh"
+
+
+def test_writer_source_has_no_embedded_template():
+    src = _WRITER_SRC.read_text(encoding="utf-8")
+    assert "id=\"opsView\"" not in src
+    assert "id='opsView'" not in src
+    assert "_TEMPLATE" not in src
+    assert "live_dashboard_template.html" in src
+
+
+def test_write_html_uses_file_template_preserves_ops_and_data(tmp_path):
+    tracked_before = _TRACKED_LIVE.read_bytes() if _TRACKED_LIVE.is_file() else b""
+    data_file = tmp_path / "trade_data.json"
+    live_html = tmp_path / "live_dashboard.html"
+    main_html = tmp_path / "fabio_live_dashboard.html"
+    trades = [
+        {
+            "date": "2026-09-21",
+            "symbol": "SPY",
+            "direction": "CALL",
+            "pnl": 12.0,
+            "include_in_session_pnl": True,
+            "notes": "moomoo_paper_fifo",
+        }
+    ]
+    opens = [
+        {
+            "date": "2026-09-21",
+            "symbol": "QQQ",
+            "direction": "CALL",
+            "entry_time": "—",
+            "entry_price": 1.0,
+            "contracts": 1,
+            "vix": 0.0,
+            "or_atr_pct": 0.0,
+            "notes": "broker code=US.QQQ251219C00400000",
+        }
+    ]
+    data_file.write_text(
+        json.dumps({"trades": trades, "daily": [_minimal_daily("2026-09-21")], "open_positions": opens}),
+        encoding="utf-8",
+    )
+    with (
+        patch("dashboard_writer.DATA_FILE", str(data_file)),
+        patch("dashboard_writer.DASH_LOCAL", str(live_html)),
+        patch("dashboard_writer.DASH_MAIN", str(main_html)),
+    ):
+        w = DashboardWriter()
+        w._write_html()
+
+    html = live_html.read_text(encoding="utf-8")
+    assert 'id="opsView"' in html
+    assert 'id="botStatusPill"' in html
+    assert "__DATA_JSON__" not in html
+    assert "__STORY_LINK_HTML__" not in html
+    assert "fabio_scrollytelling.html" in html
+    assert "python3 -m http.server" in html
+    assert "fabio serve" not in html
+    data_line = next(ln for ln in html.splitlines() if ln.startswith("const DATA = "))
+    raw = data_line[len("const DATA = ") :]
+    if raw.endswith(";"):
+        raw = raw[:-1]
+    payload = json.loads(raw)
+    assert payload["trades"][0]["symbol"] == "SPY"
+    assert payload["open_positions"][0]["symbol"] == "QQQ"
+    assert payload.get("beta_identity") is not None
+    assert "dashboard_generated_at_utc" in payload
+    assert _TRACKED_LIVE.read_bytes() == tracked_before
+
+
+def test_push_dashboard_sh_does_not_auto_commit_html():
+    text = _PUSH_DASH.read_text(encoding="utf-8")
+    assert not re.search(r"^\s*git add\b", text, re.M)
+    assert not re.search(r"^\s*git commit\b", text, re.M)
+    assert not re.search(r"^\s*git push\b", text, re.M)
+    assert "python3 -m http.server" in text
+    assert "live_dashboard.html" in text
+    assert "paused" in text.lower() or "PAUSED" in text

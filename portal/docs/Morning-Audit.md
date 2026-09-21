@@ -23,6 +23,8 @@ cd "/path/to/Fabio_bot"
 tail -f bot_health_snapshots.jsonl
 ```
 
+Local dashboard (not Pages): the desk writes `frontend/live_dashboard.html` from `frontend/templates/live_dashboard_template.html` plus gitignored `frontend/bot_live_status.json`. **`file://` will not poll.** From `frontend/` run `python3 -m http.server 8000` and open `http://127.0.0.1:8000/live_dashboard.html`. Do not commit regenerated HTML; `portal/push_dashboard.sh` no longer auto-commits it.
+
 ## 1) Preflight (run first)
 
 ```bash

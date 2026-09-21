@@ -286,6 +286,12 @@ def _stub_health_bot(tmp_path, monkeypatch) -> ORBBot:
     monkeypatch.setattr(
         "fabio_live.bot.HEALTH_SNAPSHOT_PATH", str(tmp_path / "bot_health_snapshots.jsonl")
     )
+    monkeypatch.setattr(
+        "dashboard_writer.LIVE_STATUS_FILE", str(tmp_path / "bot_live_status.json")
+    )
+    monkeypatch.setattr(
+        "dashboard_writer.OPS_FEED_FILE", str(tmp_path / "bot_ops_feed.json")
+    )
     monkeypatch.setattr("fabio_live.bot.MR_PAPER_ENABLED", False)
     monkeypatch.setattr(
         "fabio_live.bot.enabled_paper_book_ids",
@@ -325,6 +331,19 @@ def test_emit_health_snapshot_four_books_and_circuit_alias(tmp_path, monkeypatch
     bot._emit_health_snapshot(force=True)
     path = tmp_path / "bot_health_snapshots.jsonl"
     snap = json.loads(path.read_text(encoding="utf-8").strip())
+    status_path = tmp_path / "bot_live_status.json"
+    feed_path = tmp_path / "bot_ops_feed.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["running"] is True
+    assert status["paused"] is False
+    assert status["source"] == "health_snapshot"
+    assert status["pid"]
+    assert status["checked_at_utc"]
+    assert status["ops_snapshot"]["circuit"]["trade_count"] == snap["circuit"]["trade_count"]
+    assert status["health"]["books"][BOOK_ORB_MOOMOO]["bound"] is True
+    feed = json.loads(feed_path.read_text(encoding="utf-8"))
+    assert feed["version"] == 1
+    assert feed["events"][-1]["meta"]["alert_type"] == "HEALTH_SNAPSHOT"
     assert set(OPS_FIELDS).issubset(snap["ops"])
     assert snap["ops"]["queue_max"] == 500
     assert snap["ops"]["thread_alive"] is True
@@ -345,6 +364,21 @@ def test_emit_health_snapshot_four_books_and_circuit_alias(tmp_path, monkeypatch
     for bid in (BOOK_ORB_TRADIER, BOOK_MR_MOOMOO, BOOK_MR_TRADIER):
         assert snap["books"][bid]["bound"] is False
         assert snap["books"][bid]["cb"]["realized_pnl"] == 0.0
+
+
+def test_health_heartbeat_refreshes_live_status_without_second_jsonl(tmp_path, monkeypatch):
+    bot = _stub_health_bot(tmp_path, monkeypatch)
+    bot._emit_health_snapshot(force=True)
+    jsonl = tmp_path / "bot_health_snapshots.jsonl"
+    first = jsonl.read_text(encoding="utf-8")
+    n_events = len(json.loads((tmp_path / "bot_ops_feed.json").read_text())["events"])
+    bot.paused = True
+    bot._emit_health_snapshot(force=False)
+    assert jsonl.read_text(encoding="utf-8") == first
+    status = json.loads((tmp_path / "bot_live_status.json").read_text(encoding="utf-8"))
+    assert status["paused"] is True
+    feed = json.loads((tmp_path / "bot_ops_feed.json").read_text(encoding="utf-8"))
+    assert len(feed["events"]) == n_events
 
 
 def test_emit_mr_only_bind_does_not_copy_orb_pnl(tmp_path, monkeypatch):

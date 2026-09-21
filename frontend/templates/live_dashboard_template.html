@@ -2014,9 +2014,9 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
 <div id="deskView" class="dash-view">
 <div class="page">
   <div class="desk-file-banner" id="deskFileBanner" role="status">
-    <span class="desk-banner-short">Live status needs <code>fabio serve</code> over HTTP.</span>
-    <span class="desk-banner-long">Live status polling requires HTTP. Run <code>fabio serve</code>, then open
-    <code>http://127.0.0.1:8765/live_dashboard.html</code> — the LIVE indicator will not update on <code>file://</code> pages.</span>
+    <span class="desk-banner-short">Live status needs HTTP — <code>python3 -m http.server</code> from <code>frontend/</code>.</span>
+    <span class="desk-banner-long">Live status polling requires HTTP. From <code>frontend/</code> run <code>python3 -m http.server 8000</code>, then open
+    <code>http://127.0.0.1:8000/live_dashboard.html</code> — the LIVE indicator will not update on <code>file://</code> pages.</span>
   </div>
 
   <div class="desk-hero" id="deskHero" aria-label="At a glance">
@@ -2357,9 +2357,9 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
   <div class="ops-board">
     <p class="ops-intro">Live reasoning, signal checks, orders, and system events — refreshed every few seconds while the bot runs.</p>
     <div class="ops-file-banner" id="opsFileBanner" role="status">
-      <span class="ops-banner-short">Ops feed needs <code>fabio serve</code> over HTTP.</span>
-      <span class="ops-banner-long">Browsers block live JSON polling on <code>file://</code> pages. Run <code>fabio serve</code> in a terminal, then open
-      <code>http://127.0.0.1:8765/live_dashboard.html</code> and switch to Ops Board for live updates.</span>
+      <span class="ops-banner-short">Ops feed needs HTTP — <code>python3 -m http.server</code> from <code>frontend/</code>.</span>
+      <span class="ops-banner-long">Browsers block live JSON polling on <code>file://</code> pages. From <code>frontend/</code> run <code>python3 -m http.server 8000</code>, then open
+      <code>http://127.0.0.1:8000/live_dashboard.html</code> and switch to Ops Board for live updates.</span>
     </div>
     <div class="ops-status-grid" id="opsStatusGrid" aria-live="polite"></div>
     <div class="ops-toolbar">
@@ -2379,7 +2379,7 @@ tbody td { padding: 9px 12px; vertical-align: middle; }
       <span class="ops-feed-meta" id="opsFeedMeta">Waiting for feed…</span>
     </div>
     <div class="ops-feed" id="opsFeed" role="log" aria-live="polite"></div>
-    <div class="ops-empty" id="opsEmpty" hidden>No events yet — start the bot with <code>fabio bot</code> to stream live reasoning here.</div>
+    <div class="ops-empty" id="opsEmpty" hidden>No events yet — start the desk with <code>python3 backend/orb_bot_fabio.py</code> to stream live reasoning here.</div>
   </div>
 </div>
 
@@ -2557,7 +2557,7 @@ function applyBotStatus(st, options) {
   if (label) label.textContent = 'OFF';
   el.title = (st && st.session_complete)
     ? 'Bot stopped cleanly — ' + ageNote
-    : 'Bot not running — fabio bot to start';
+    : 'Bot not running — start with python3 backend/orb_bot_fabio.py';
   if (typeof syncDeskHeroBot === 'function') syncDeskHeroBot(st);
 }
 
@@ -2649,10 +2649,10 @@ function applyBotStatus(st, options) {
     if (metaEl) {
       if (!events.length) {
         metaEl.textContent = snapshotOnly
-          ? 'Snapshot empty — run fabio serve for live Ops Board'
-          : 'No events yet — run fabio restart if the bot was already running';
+          ? 'Snapshot empty — serve frontend/ over HTTP (python3 -m http.server) for live Ops Board'
+          : 'No events yet — restart the desk bot if it was already running';
       } else {
-        var suffix = snapshotOnly ? ' (snapshot — run fabio serve for live)' : '';
+        var suffix = snapshotOnly ? ' (snapshot — python3 -m http.server from frontend/ for live)' : '';
         metaEl.textContent = events.length + ' event' + (events.length === 1 ? '' : 's') +
           (j.updated_at_utc ? ' · updated ' + fmtTs(j.updated_at_utc) : '') + suffix;
       }
@@ -2702,7 +2702,7 @@ function applyBotStatus(st, options) {
       if (emptyEl) {
         emptyEl.hidden = false;
         emptyEl.textContent = activeFilter === 'ALL'
-          ? 'No events yet — start the bot with fabio bot to stream live reasoning here.'
+          ? 'No events yet — start the desk with python3 backend/orb_bot_fabio.py to stream live reasoning here.'
           : 'No ' + activeFilter.toLowerCase() + ' events in the current buffer.';
       }
       return;
@@ -3572,7 +3572,7 @@ function buildDayGatesFromEntry(entry) {
       label: 'Bot start gate',
       layer: 'launcher',
       status: 'blocked',
-      note: 'NYSE closed — fabio bot exits immediately (override: FABIO_IGNORE_NYSE_CALENDAR=1)'
+      note: 'NYSE closed — desk bot exits immediately (override: FABIO_IGNORE_NYSE_CALENDAR=1)'
     });
     gates.push({
       time_et: '—',
