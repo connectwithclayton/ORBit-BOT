@@ -437,6 +437,11 @@ def test_four_paper_books_isolated_not_shared_om():
     ids = {b.book_id for b in ALL_PAPER_BOOKS}
     assert ids == {"orb-moomoo", "orb-tradier", "mr-moomoo", "mr-tradier"}
     assert {b.starting_balance for b in ALL_PAPER_BOOKS} == {PAPER_BOOK_STARTING_BALANCE}
+    from fabio_live.paper_books import init_book_circuit
+
+    for spec in ALL_PAPER_BOOKS:
+        cb = init_book_circuit()
+        assert cb.portfolio_at_open == PAPER_BOOK_STARTING_BALANCE == 10_000.0
 
 
 def test_real_trd_env_refused(monkeypatch):

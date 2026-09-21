@@ -62,6 +62,120 @@ def test_four_books_modeled_with_10k_each():
         cb = init_book_circuit()
         assert cb.portfolio_at_open == 10_000.0
         assert modeled_book_equity(cb) == 10_000.0
+    polluted = RiskCircuitBreaker()
+    polluted.set_portfolio_open(1_000_000.0)
+    init_book_circuit(polluted)
+    assert polluted.portfolio_at_open == PAPER_BOOK_STARTING_BALANCE == 10_000.0
+
+
+def test_registry_apply_starting_balances_includes_orb_moomoo(tmp_path):
+    """Captain B: ORB-Moomoo CB denom is $10k, same as the other three books."""
+    reg = PaperBookRegistry()
+    bound = []
+    for spec in ALL_PAPER_BOOKS:
+        cb = RiskCircuitBreaker()
+        cb.set_portfolio_open(1_000_000.0)
+        rt = reg.bind(
+            spec.book_id,
+            order_mgr=SimpleNamespace(positions={}),
+            cb=cb,
+            ledger_dir=tmp_path,
+        )
+        bound.append(rt)
+    assert {rt.spec.book_id for rt in bound} == {b.book_id for b in ALL_PAPER_BOOKS}
+    for rt in bound:
+        assert rt.cb.portfolio_at_open == PAPER_BOOK_STARTING_BALANCE
+        rt.cb.set_portfolio_open(50_000.0)
+    reg.apply_starting_balances()
+    for rt in reg.all_runtimes():
+        assert rt.spec.starting_balance == PAPER_BOOK_STARTING_BALANCE == 10_000.0
+        assert rt.cb.portfolio_at_open == 10_000.0
+        assert rt.modeled_equity() == 10_000.0
+
+
+def _stub_initialize_day_bot(tmp_path, *, prefetched: bool, opend_equity: float):
+    from fabio_live.bot import ORBBot
+
+    orb_cb = RiskCircuitBreaker()
+    orb_cb.set_portfolio_open(opend_equity)
+    reg = PaperBookRegistry()
+    for spec in ALL_PAPER_BOOKS:
+        cb = orb_cb if spec.book_id == BOOK_ORB_MOOMOO else RiskCircuitBreaker()
+        if spec.book_id != BOOK_ORB_MOOMOO:
+            cb.set_portfolio_open(opend_equity)
+        reg.bind(
+            spec.book_id,
+            order_mgr=SimpleNamespace(positions={}),
+            cb=cb,
+            ledger_dir=tmp_path,
+        )
+    bot = ORBBot.__new__(ORBBot)
+    bot._prefetched = prefetched
+    bot._prefetch_vix = 18.0
+    bot._prefetch_portfolio = opend_equity
+    bot._prefetch_daily = {}
+    bot.cb = orb_cb
+    bot._paper_books = reg
+    bot._capital_at_open = 0.0
+    bot.quote_ctx = object()
+    bot.trade_ctx = object()
+    bot.regimes = {}
+    bot.sheets = SimpleNamespace(is_connected=lambda: False)
+    bot.ops = SimpleNamespace(alert=lambda *_: None, log_alert=lambda *_: None)
+    bot._enqueue_intraday_dashboard_refresh = lambda: None
+    bot._now_market = lambda: __import__("datetime").datetime(
+        2026, 9, 21, 9, 31, tzinfo=__import__("zoneinfo").ZoneInfo("America/New_York")
+    )
+    return bot, reg
+
+
+def test_initialize_day_all_four_cbs_use_10k_not_opend(monkeypatch, tmp_path):
+    monkeypatch.setattr("fabio_live.bot.SYMBOLS", [])
+    monkeypatch.setattr("fabio_live.bot.get_vix", lambda *_a, **_k: 18.0)
+    monkeypatch.setattr(
+        "fabio_live.bot.get_portfolio_value", lambda *_a, **_k: 1_000_000.0
+    )
+    bot, reg = _stub_initialize_day_bot(tmp_path, prefetched=False, opend_equity=1_000_000.0)
+    bot.initialize_day()
+    assert bot.cb.portfolio_at_open == PAPER_BOOK_STARTING_BALANCE == 10_000.0
+    assert bot._capital_at_open == 10_000.0
+    ids = {rt.spec.book_id for rt in reg.all_runtimes()}
+    assert ids == {
+        BOOK_ORB_MOOMOO,
+        BOOK_ORB_TRADIER,
+        BOOK_MR_MOOMOO,
+        BOOK_MR_TRADIER,
+    }
+    for rt in reg.all_runtimes():
+        assert rt.cb.portfolio_at_open == 10_000.0, rt.spec.book_id
+        assert rt.modeled_equity() == 10_000.0, rt.spec.book_id
+    orb = reg.get(BOOK_ORB_MOOMOO)
+    assert orb is not None and orb.cb is bot.cb
+    assert orb.cb.daily_loss_pct == 0.0
+    orb.cb.record_result(-500.0)
+    assert orb.cb.daily_loss_pct == pytest.approx(-500.0 / 10_000.0)
+
+
+def test_initialize_day_prefetch_opend_equity_does_not_become_cb_denom(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr("fabio_live.bot.SYMBOLS", [])
+    bot, reg = _stub_initialize_day_bot(
+        tmp_path, prefetched=True, opend_equity=50_000.0
+    )
+    bot.initialize_day()
+    assert bot.cb.portfolio_at_open == 10_000.0
+    assert bot._capital_at_open == 10_000.0
+    assert all(rt.cb.portfolio_at_open == 10_000.0 for rt in reg.all_runtimes())
+
+
+def test_initialize_day_source_does_not_skip_orb_moomoo_cb():
+    src = (BACKEND / "fabio_live" / "bot.py").read_text(encoding="utf-8")
+    assert "self.cb.set_portfolio_open(PAPER_BOOK_STARTING_BALANCE)" in src
+    assert "self._capital_at_open = PAPER_BOOK_STARTING_BALANCE" in src
+    assert "books.apply_starting_balances()" in src
+    assert "if rt.spec.book_id == BOOK_ORB_MOOMOO:" not in src
+    assert "self.cb.set_portfolio_open(portfolio_val)" not in src
 
 
 def test_sources_are_distinct_and_preserve_moomoo_fifo():

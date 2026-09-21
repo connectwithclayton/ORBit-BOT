@@ -514,6 +514,14 @@ class PaperBookRegistry:
     def all_runtimes(self) -> list[PaperBookRuntime]:
         return list(self._books.values())
 
+    def apply_starting_balances(self) -> None:
+        """Force every bound book's CB denominator to that book's $10k start.
+
+        Includes ORB-Moomoo. OpenD ``get_portfolio_value`` is never the CB base.
+        """
+        for rt in self._books.values():
+            rt.cb.set_portfolio_open(float(rt.spec.starting_balance))
+
     def sync_and_save(self, book_id: str | None = None) -> None:
         """Persist tracked codes for one book, or every bound book."""
         if book_id is not None:

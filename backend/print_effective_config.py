@@ -172,7 +172,9 @@ def main() -> None:
     )
     print(
         "- Four isolated paper books (ORB×Moomoo, ORB×Tradier, MR×Moomoo, MR×Tradier): "
-        f"${PAPER_BOOK_STARTING_BALANCE:,.0f} start each; separate OM/CB/ledger/flatten. "
+        f"${PAPER_BOOK_STARTING_BALANCE:,.0f} start / CB denominator each "
+        "(ORB-Moomoo included; not OpenD get_portfolio_value); "
+        "separate OM/CB/ledger/flatten. "
         "No shared flatten across brokers. Default boot is still ORB-Moomoo OpenD. "
         "FABIO_TRADIER_PAPER_BOOKS=1 enables Tradier books (sandbox pin). "
         f"Runtime enabled: {', '.join(enabled_paper_book_ids())}."

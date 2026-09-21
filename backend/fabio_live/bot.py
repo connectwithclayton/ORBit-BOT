@@ -1081,8 +1081,11 @@ class ORBBot:
 
         if self._prefetched:
             vix = self._prefetch_vix
-            portfolio_val = self._prefetch_portfolio
-            print(f"  VIX: {vix:.2f} | Portfolio: ${portfolio_val:,.0f}  [pre-fetched]")
+            broker_modeled = self._prefetch_portfolio
+            print(
+                f"  VIX: {vix:.2f} | Paper book: ${PAPER_BOOK_STARTING_BALANCE:,.0f} "
+                f"| Broker modeled: ${broker_modeled:,.0f}  [pre-fetched]"
+            )
         else:
             vix = get_vix(self.quote_ctx)
             if vix is None:
@@ -1102,21 +1105,23 @@ class ORBBot:
                 )
                 self._set_system_pause(PAUSE_REASON_VIX_UNAVAILABLE, hint)
                 return
-            portfolio_val = min(
+            broker_modeled = min(
                 get_portfolio_value(self.trade_ctx),
                 STRATEGY_CAPITAL * RESEARCH_RISK_CAP_MULTIPLIER,
             )
-            print(f"  VIX: {vix:.2f} | Portfolio: ${portfolio_val:,.0f}")
+            print(
+                f"  VIX: {vix:.2f} | Paper book: ${PAPER_BOOK_STARTING_BALANCE:,.0f} "
+                f"| Broker modeled: ${broker_modeled:,.0f}"
+            )
 
-        self.cb.set_portfolio_open(portfolio_val)
-        self._capital_at_open = portfolio_val
+        # Captain B: all four books, including ORB-Moomoo, use the $10k paper-book
+        # start as the CB denominator. OpenD get_portfolio_value is display-only.
+        self.cb.set_portfolio_open(PAPER_BOOK_STARTING_BALANCE)
+        self._capital_at_open = PAPER_BOOK_STARTING_BALANCE
         self._hydrate_circuit_from_sheets_today()
         books = getattr(self, "_paper_books", None)
         if books is not None:
-            for rt in books.all_runtimes():
-                if rt.spec.book_id == BOOK_ORB_MOOMOO:
-                    continue
-                rt.cb.set_portfolio_open(rt.spec.starting_balance)
+            books.apply_starting_balances()
 
         for sym in SYMBOLS:
             if self._prefetched and sym in self._prefetch_daily:

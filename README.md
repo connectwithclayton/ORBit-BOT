@@ -104,7 +104,7 @@ Pass `--book orb-tradier` (default) or `--book mr-tradier`. Moomoo fail-safe tak
 
 ### Four isolated paper books (broker comparison)
 
-Each strategy gets its own **$10,000** starting balance on each paper account. Ledgers, circuits, and flatten are per book — not a shared flatten across brokers or across strategies on the same firm.
+Each strategy gets its own **$10,000** starting balance on each paper account. Ledgers, circuits, and flatten are per book — not a shared flatten across brokers or across strategies on the same firm. Circuit-breaker daily-loss denominators use `PAPER_BOOK_STARTING_BALANCE` (**$10,000**) for **all four books**, including ORB-Moomoo — not OpenD `get_portfolio_value`.
 
 | Book | `source=` | FIFO notes | Flatten |
 |---|---|---|---|
