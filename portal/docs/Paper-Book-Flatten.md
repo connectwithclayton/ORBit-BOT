@@ -18,6 +18,8 @@ PYTHONPATH=backend:frontend bash portal/install_paper_flatten_scheduler.sh
 launchctl list | grep claytonorb.paper.flatten
 ```
 
+If `launchctl load` fails mid-loop, the installer best-effort **unloads and removes the paper flatten plists written in this install attempt**, then exits non-zero. It does not leave a silent partial arm. Re-run after fixing launchd.
+
 | launchd label | `--book` | Typical weekday fire (ET) |
 |---|---|---|
 | `com.claytonorb.paper.flatten.orb-moomoo` | `orb-moomoo` | 15:50 |

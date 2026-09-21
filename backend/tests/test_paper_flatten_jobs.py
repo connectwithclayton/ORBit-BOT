@@ -414,11 +414,51 @@ def _installer_python_stub(tmp_path: Path, n_jobs: int) -> Path:
     return stub
 
 
-def _run_flatten_installer(tmp_path: Path, n_jobs: int, *args: str) -> subprocess.CompletedProcess:
+def _fake_launchctl_bin(tmp_path: Path) -> Path:
+    """PATH stub: load/unload log to FAKE_LAUNCHCTL_LOG; Nth load fails if FAIL_ON set."""
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "launchctl"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -u\n"
+        "LOG=\"${FAKE_LAUNCHCTL_LOG:?}\"\n"
+        "STATE=\"${FAKE_LAUNCHCTL_STATE:?}\"\n"
+        "FAIL_ON=\"${FAKE_LAUNCHCTL_FAIL_ON_LOAD:-0}\"\n"
+        "cmd=\"${1:-}\"\n"
+        "shift || true\n"
+        "printf '%s %s\\n' \"$cmd\" \"$*\" >>\"$LOG\"\n"
+        "if [[ \"$cmd\" == load ]]; then\n"
+        "  n=0\n"
+        "  if [[ -f \"$STATE\" ]]; then\n"
+        "    n=$(cat \"$STATE\")\n"
+        "  fi\n"
+        "  n=$((n + 1))\n"
+        "  printf '%s\\n' \"$n\" >\"$STATE\"\n"
+        "  if [[ \"$FAIL_ON\" -gt 0 && \"$n\" -ge \"$FAIL_ON\" ]]; then\n"
+        "    echo \"fake launchctl: refusing load #${n}\" >&2\n"
+        "    exit 1\n"
+        "  fi\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return bin_dir
+
+
+def _run_flatten_installer(
+    tmp_path: Path,
+    n_jobs: int,
+    *args: str,
+    extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{REPO / 'backend'}:{REPO / 'frontend'}"
     env["PYTHON_BIN"] = str(_installer_python_stub(tmp_path, n_jobs))
     env["HOME"] = str(tmp_path / "home")
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["bash", str(INSTALLER), *args],
         cwd=str(REPO),
@@ -454,3 +494,81 @@ def test_installer_writes_exactly_four_plists_before_success(tmp_path):
         "com.claytonorb.paper.flatten.book-2.plist",
         "com.claytonorb.paper.flatten.book-3.plist",
     ]
+
+
+def _flatten_agents(tmp_path: Path) -> list[Path]:
+    agents = tmp_path / "home" / "Library" / "LaunchAgents"
+    if not agents.is_dir():
+        return []
+    return sorted(agents.glob("com.claytonorb.paper.flatten.*.plist"))
+
+
+def test_installer_rolls_back_this_attempt_on_mid_loop_launchctl_load_failure(tmp_path):
+    """Captain B: 3rd load fails → unload+rm this attempt's plists; no success banner."""
+    fake_bin = _fake_launchctl_bin(tmp_path)
+    log = tmp_path / "launchctl.log"
+    state = tmp_path / "launchctl.state"
+    extra = {
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "FAKE_LAUNCHCTL_LOG": str(log),
+        "FAKE_LAUNCHCTL_STATE": str(state),
+        "FAKE_LAUNCHCTL_FAIL_ON_LOAD": "3",
+    }
+    proc = _run_flatten_installer(tmp_path, 4, extra_env=extra)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "installed (four labels" not in combined
+    assert "Failed to load" in combined
+    assert "Rolling back this install attempt" in combined
+    assert _flatten_agents(tmp_path) == []
+    log_text = log.read_text(encoding="utf-8") if log.is_file() else ""
+    loads = [ln for ln in log_text.splitlines() if ln.startswith("load ")]
+    unloads = [ln for ln in log_text.splitlines() if ln.startswith("unload ")]
+    assert len(loads) == 3
+    # Two successful jobs: unload-then-load. Third: unload-then-failed-load.
+    # Rollback then unloads the three plists written this attempt.
+    assert len(unloads) == 6
+    for i in range(3):
+        plist = str(
+            tmp_path
+            / "home"
+            / "Library"
+            / "LaunchAgents"
+            / f"com.claytonorb.paper.flatten.book-{i}.plist"
+        )
+        assert any(plist in ln for ln in unloads)
+        assert not Path(plist).exists()
+    leftover_book3 = (
+        tmp_path
+        / "home"
+        / "Library"
+        / "LaunchAgents"
+        / "com.claytonorb.paper.flatten.book-3.plist"
+    )
+    assert not leftover_book3.exists()
+
+
+def test_installer_loads_four_when_launchctl_succeeds(tmp_path):
+    fake_bin = _fake_launchctl_bin(tmp_path)
+    log = tmp_path / "launchctl.log"
+    state = tmp_path / "launchctl.state"
+    extra = {
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "FAKE_LAUNCHCTL_LOG": str(log),
+        "FAKE_LAUNCHCTL_STATE": str(state),
+        "FAKE_LAUNCHCTL_FAIL_ON_LOAD": "0",
+    }
+    proc = _run_flatten_installer(tmp_path, 4, extra_env=extra)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, combined
+    assert "installed (four labels" in combined
+    assert "Rolling back" not in combined
+    names = [p.name for p in _flatten_agents(tmp_path)]
+    assert names == [
+        "com.claytonorb.paper.flatten.book-0.plist",
+        "com.claytonorb.paper.flatten.book-1.plist",
+        "com.claytonorb.paper.flatten.book-2.plist",
+        "com.claytonorb.paper.flatten.book-3.plist",
+    ]
+    log_text = log.read_text(encoding="utf-8")
+    assert len([ln for ln in log_text.splitlines() if ln.startswith("load ")]) == 4

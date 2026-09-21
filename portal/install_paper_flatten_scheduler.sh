@@ -14,6 +14,8 @@
 # Each job argv contains --book <that id>. Moomoo inner argv pins --trd-env SIMULATE
 # (never REAL; do not rely on host MOOMOO_TRADE_ENV). Wrappers never pass REAL / live /
 # FABIO_ALLOW_REAL_TRADING. KeepAlive false. Exit 4 (aborted_window) is skip.
+# Mid-loop launchctl load failure: best-effort unload+rm of plists written in THIS
+# install attempt, then exit non-zero (no silent partial arm).
 #
 # Usage:
 #   bash portal/install_paper_flatten_scheduler.sh --dry-run
@@ -155,6 +157,30 @@ EOF
   echo "$plist"
 }
 
+# Best-effort unload+remove plists recorded for this install attempt only.
+rollback_this_attempt() {
+  local plist n
+  n="$(wc -l <"$ATTEMPT_LIST" 2>/dev/null | tr -d '[:space:]')"
+  n="${n:-0}"
+  echo "↩ Rolling back this install attempt (${n} plist(s) written this run)." >&2
+  if [[ ! -s "$ATTEMPT_LIST" ]]; then
+    return 0
+  fi
+  while IFS= read -r plist; do
+    [[ -z "$plist" ]] && continue
+    if command -v launchctl >/dev/null 2>&1; then
+      launchctl unload "$plist" 2>/dev/null || true
+    fi
+    rm -f "$plist" || true
+  done < "$ATTEMPT_LIST"
+}
+
+fail_install() {
+  echo "❌ $1" >&2
+  rollback_this_attempt
+  exit 1
+}
+
 if [[ "$MODE" == "dry-run" ]]; then
   JOBS_FILE="$(mktemp)"
   trap 'rm -f "$JOBS_FILE"' EXIT
@@ -166,7 +192,9 @@ fi
 chmod +x "$WRAP" 2>/dev/null || true
 
 JOBS_FILE="$(mktemp)"
-trap 'rm -f "$JOBS_FILE"' EXIT
+ATTEMPT_LIST="$(mktemp)"
+: >"$ATTEMPT_LIST"
+trap 'rm -f "$JOBS_FILE" "$ATTEMPT_LIST"' EXIT
 collect_flatten_job_rows "$JOBS_FILE"
 
 if [[ "$MODE" == "uninstall" ]]; then
@@ -187,17 +215,16 @@ LOADED=0
 while read -r _pfx BOOK HOUR MINUTE LABEL JSONL; do
   plist="$(write_plist "$BOOK" "$HOUR" "$MINUTE" "$LABEL")"
   if [[ ! -f "$plist" ]]; then
-    echo "❌ Failed to write plist for ${LABEL}" >&2
-    exit 1
+    fail_install "Failed to write plist for ${LABEL}"
   fi
+  echo "$plist" >>"$ATTEMPT_LIST"
   WRITTEN=$((WRITTEN + 1))
   if command -v launchctl >/dev/null 2>&1; then
     launchctl unload "$plist" 2>/dev/null || true
     if launchctl load "$plist"; then
       LOADED=$((LOADED + 1))
     else
-      echo "❌ Failed to load $plist" >&2
-      exit 1
+      fail_install "Failed to load $plist"
     fi
   else
     echo "⚠ launchctl not found; wrote $plist (load on the Mac trading host)."
@@ -205,8 +232,12 @@ while read -r _pfx BOOK HOUR MINUTE LABEL JSONL; do
 done < "$JOBS_FILE"
 
 if [[ "$WRITTEN" -ne "$EXPECTED_FLATTEN_JOBS" ]]; then
-  echo "❌ Wrote ${WRITTEN} plist(s); expected exactly ${EXPECTED_FLATTEN_JOBS}." >&2
-  exit 1
+  fail_install "Wrote ${WRITTEN} plist(s); expected exactly ${EXPECTED_FLATTEN_JOBS}."
+fi
+if command -v launchctl >/dev/null 2>&1; then
+  if [[ "$LOADED" -ne "$EXPECTED_FLATTEN_JOBS" ]]; then
+    fail_install "Loaded ${LOADED} job(s); expected exactly ${EXPECTED_FLATTEN_JOBS}."
+  fi
 fi
 
 echo "✅ Paper flatten schedulers installed (four labels, paper only)."
