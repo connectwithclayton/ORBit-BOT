@@ -22,6 +22,8 @@ from fabio_live.paper_books import (
     PAPER_BOOK_STARTING_BALANCE,
     PaperBookLedger,
     PaperBookRegistry,
+    UnknownPaperBook,
+    enabled_paper_book_ids,
     init_book_circuit,
     last_flatten_sidecar_path,
     paper_books_health_map,
@@ -389,3 +391,59 @@ def test_verify_phase2_reliability_passes_pre_slice_and_new_snapshot(
     new_payload["books"] = books
     snap.write_text(json.dumps(new_payload) + "\n", encoding="utf-8")
     assert gate.main() == 0
+
+
+def test_enabled_paper_book_ids_strict_raises_unknown(monkeypatch):
+    monkeypatch.setenv("FABIO_PAPER_BOOKS", "orb-moomoo,not-a-book")
+    with pytest.raises(UnknownPaperBook):
+        enabled_paper_book_ids(strict=True)
+
+
+def test_enabled_paper_book_ids_fail_soft_skips_unknown(monkeypatch):
+    monkeypatch.setenv("FABIO_PAPER_BOOKS", "orb-moomoo,not-a-book,mr-moomoo")
+    ids = enabled_paper_book_ids(strict=False)
+    assert ids == (BOOK_ORB_MOOMOO, BOOK_MR_MOOMOO)
+    assert "not-a-book" not in ids
+
+
+def test_health_map_skips_unknown_enabled_token_keeps_four_keys(tmp_path):
+    books = paper_books_health_map(
+        None,
+        enabled_ids=(BOOK_ORB_MOOMOO, "not-a-book"),
+        ledger_dir=tmp_path,
+    )
+    _assert_four_book_shape(books)
+    assert "not-a-book" not in books
+    assert books[BOOK_ORB_MOOMOO]["enabled"] is True
+    assert books[BOOK_MR_MOOMOO]["enabled"] is False
+
+
+def test_emit_health_snapshot_survives_bad_paper_books_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("FABIO_PAPER_BOOKS", "orb-moomoo,totally-unknown-book")
+    bot = _stub_health_bot(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "fabio_live.bot.enabled_paper_book_ids", enabled_paper_book_ids
+    )
+    bot._emit_health_snapshot(force=True)
+    snap = json.loads((tmp_path / "bot_health_snapshots.jsonl").read_text().strip())
+    _assert_four_book_shape(snap["books"])
+    assert snap["ops"]["thread_alive"] is True
+    assert snap["books"][BOOK_ORB_MOOMOO]["enabled"] is True
+    assert snap["books"][BOOK_ORB_MOOMOO]["bound"] is True
+    assert "totally-unknown-book" not in snap["books"]
+
+
+def test_emit_health_snapshot_survives_books_map_exception(tmp_path, monkeypatch):
+    bot = _stub_health_bot(tmp_path, monkeypatch)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("books assembly exploded")
+
+    monkeypatch.setattr("fabio_live.bot.paper_books_health_map", _boom)
+    bot._emit_health_snapshot(force=True)
+    snap = json.loads((tmp_path / "bot_health_snapshots.jsonl").read_text().strip())
+    assert snap["ops"]["queue_max"] == 500
+    _assert_four_book_shape(snap["books"])
+    for bid in FOUR_BOOK_IDS:
+        assert snap["books"][bid]["bound"] is False
+        assert snap["books"][bid]["enabled"] is False

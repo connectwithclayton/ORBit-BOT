@@ -68,6 +68,7 @@ from fabio_live.paper_books import (
     BOOK_ORB_TRADIER,
     PAPER_BOOK_STARTING_BALANCE,
     PaperBookRegistry,
+    canonical_books_health_fallback,
     enabled_paper_book_ids,
     flatten_sidecar_reason,
     make_mr_executor_for_book,
@@ -1023,11 +1024,19 @@ class ORBBot:
                 for (sym, tf), v in self._data_health.items()
             },
             "position_parity": dict(self._position_parity_latest),
-            "books": paper_books_health_map(
-                getattr(self, "_paper_books", None),
-                enabled_ids=enabled_paper_book_ids(mr_paper=MR_PAPER_ENABLED),
-            ),
         }
+        # Fail-soft: a bad FABIO_PAPER_BOOKS token (UnknownPaperBook) or any
+        # books-map error must not abort run(). Canonical four keys always emit.
+        try:
+            snapshot["books"] = paper_books_health_map(
+                getattr(self, "_paper_books", None),
+                enabled_ids=enabled_paper_book_ids(
+                    mr_paper=MR_PAPER_ENABLED, strict=False
+                ),
+            )
+        except Exception as e:
+            print(f"  [HEALTH] books map failed: {e}")
+            snapshot["books"] = canonical_books_health_fallback()
         self._write_health_snapshot(snapshot)
         pp = snapshot["position_parity"]
         pp_note = (
